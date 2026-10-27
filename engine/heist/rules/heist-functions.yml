@@ -12,7 +12,6 @@ rules:
       - pattern: $C.auth.getUser(...)
       - pattern: $C.auth.getClaims(...)
       - pattern: $C.auth.getSession(...)
-      - pattern: $C.getUser(...)
       - pattern: verifyJWT(...)
       - pattern: $O.verifyJWT(...)
       - pattern: jwtVerify(...)
@@ -21,6 +20,30 @@ rules:
       - pattern: await auth()
       - pattern: getServerSession(...)
       - pattern: currentUser(...)
+
+  - id: heist-auth-flow
+    message: Part of a public sign-in flow
+    severity: INFO
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: $C.auth.exchangeCodeForSession(...)
+      - pattern: $C.auth.verifyOtp(...)
+      - pattern: $C.auth.signUp(...)
+      - pattern: $C.auth.signOut(...)
+      - pattern: $C.auth.resetPasswordForEmail(...)
+      - patterns:
+          - pattern: $C.auth.$M(...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: '^signInWith\w*$'
+      - pattern: NextAuth(...)
+      - pattern: $N.NextAuth(...)
+
+  - id: heist-auth-reexport
+    message: Re-exports route handlers from an auth module
+    severity: INFO
+    languages: [typescript, javascript]
+    pattern-regex: 'export\s*\{[^}]*\b(GET|POST)\b[^}]*\}\s*from\s*[''"][^''"]*auth[^''"]*[''"]|export\s+const\s*\{[^}]*\b(GET|POST)\b[^}]*\}\s*=\s*handlers\b'
 
   - id: heist-handler
     message: Request handler

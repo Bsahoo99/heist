@@ -37,7 +37,15 @@ PAID_HOST_RE = re.compile(
 )
 SDK_HOSTS = {"OpenAI": "api.openai.com", "Anthropic": "api.anthropic.com"}
 OWNER_FILTER_RE = re.compile(r"\b(user_id|owner_id)\b")
-RELATIVE_IMPORT_RE = re.compile(r"""(?:from|import)\s*\(?\s*['"](\.{1,2}/[^'"]+)['"]""")
+IMPORT_RE = re.compile(r"""(?:from|import)\s*\(?\s*['"]([^'"]+)['"]""")
+SEMGREP_CHUNK = 500
+MIDDLEWARE_FILES = (
+    "middleware.ts",
+    "middleware.js",
+    "src/middleware.ts",
+    "src/middleware.js",
+)
+CONFIG_FILES = ("tsconfig.json", "jsconfig.json")
 SEVERITY_MAP: dict[str, Literal["high", "medium", "low"]] = {
     "ERROR": "high",
     "WARNING": "medium",
@@ -69,27 +77,73 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
 
 
-def _read(ws: Workspace, rel: str) -> str | None:
-    if rel not in set(ws.files):
+def _read(ws: Workspace, rel: str, present: set[str]) -> str | None:
+    if rel not in present:
         return None
     try:
-        return (ws.app_root / rel).read_text(encoding="utf-8")
+        # newline="" keeps CRLF so semgrep's byte offsets line up with what we slice
+        with (ws.app_root / rel).open(encoding="utf-8", newline="") as fh:
+            return fh.read()
     except (UnicodeDecodeError, OSError):
         return None
 
 
-def _relative_imports(rel: str, text: str, present: set[str]) -> list[str]:
+def _alias_map(ws: Workspace, present: set[str]) -> list[tuple[str, list[str]]]:
+    """(prefix, base dirs) pairs for `@/` and tsconfig/jsconfig `compilerOptions.paths`."""
+    aliases: list[tuple[str, list[str]]] = []
+    for name in CONFIG_FILES:
+        text = _read(ws, name, present)
+        if text is None:
+            continue
+        try:
+            data = json.loads(re.sub(r"^\s*//.*$", "", text, flags=re.MULTILINE))
+        except json.JSONDecodeError:
+            continue
+        opts = data.get("compilerOptions") if isinstance(data, dict) else None
+        if not isinstance(opts, dict) or not isinstance(opts.get("paths"), dict):
+            continue
+        base = posixpath.normpath(str(opts.get("baseUrl") or "."))
+        for pattern, targets in opts["paths"].items():
+            if not (
+                isinstance(pattern, str) and pattern.endswith("*") and isinstance(targets, list)
+            ):
+                continue
+            dirs = [
+                posixpath.normpath(posixpath.join(base, t[:-1])) if t.endswith("*") else ""
+                for t in targets
+                if isinstance(t, str)
+            ]
+            aliases.append((pattern[:-1], [d for d in dirs if d]))
+    if not any(prefix == "@/" for prefix, _ in aliases):
+        aliases.append(("@/", ["src", "."]))
+    return aliases
+
+
+def _resolve_imports(
+    rel: str, text: str, present: set[str], aliases: list[tuple[str, list[str]]]
+) -> list[str]:
+    """Workspace files imported by relative path or alias, one level deep."""
     out: list[str] = []
     base = posixpath.dirname(rel)
-    for spec in RELATIVE_IMPORT_RE.findall(text):
-        joined = posixpath.normpath(posixpath.join(base, spec))
-        for cand in (
-            joined,
-            *(joined + e for e in SOURCE_EXTS),
-            *(f"{joined}/index{e}" for e in SOURCE_EXTS),
-        ):
-            if cand in present:
-                out.append(cand)
+    for spec in IMPORT_RE.findall(text):
+        roots: list[str] = []
+        if spec.startswith("."):
+            roots.append(posixpath.normpath(posixpath.join(base, spec)))
+        else:
+            for prefix, dirs in aliases:
+                if spec.startswith(prefix):
+                    roots.extend(
+                        posixpath.normpath(posixpath.join(d, spec[len(prefix) :])) for d in dirs
+                    )
+        for joined in roots:
+            cands = (
+                joined,
+                *(joined + e for e in SOURCE_EXTS),
+                *(f"{joined}/index{e}" for e in SOURCE_EXTS),
+            )
+            hit = next((c for c in cands if c in present), None)
+            if hit is not None and hit.endswith(SOURCE_EXTS):
+                out.append(hit)
                 break
     return out
 
@@ -116,36 +170,46 @@ def _collect_targets(ws: Workspace, texts: dict[str, str]) -> list[Target]:
 
 
 def _run_semgrep(config: str, files: list[Path]) -> dict[str, Any] | None:
+    """Scan in chunks so a huge file list cannot overflow argv; merge the results."""
     binary = shutil.which("semgrep")
     if binary is None:
         log.warning("semgrep not found, skipping function checks")
         return None
-    cmd = [
-        binary,
-        "scan",
-        "--config",
-        config,
-        "--json",
-        "--metrics=off",
-        "--disable-version-check",
-        "--quiet",
-        "--timeout",
-        "30",
-        *map(str, files),
-    ]
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=SEMGREP_TIMEOUT_S, check=False
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        log.warning("semgrep failed: %s", exc)
-        return None
-    try:
-        data = json.loads(proc.stdout)
-    except (json.JSONDecodeError, TypeError):
-        log.warning("semgrep exited with %s and no JSON: %s", proc.returncode, proc.stderr[:300])
-        return None
-    return data if isinstance(data, dict) else None
+    merged: dict[str, Any] = {"results": []}
+    ok = False
+    for i in range(0, len(files), SEMGREP_CHUNK):
+        chunk = files[i : i + SEMGREP_CHUNK]
+        cmd = [
+            binary,
+            "scan",
+            "--config",
+            config,
+            "--json",
+            "--metrics=off",
+            "--disable-version-check",
+            "--quiet",
+            "--timeout",
+            "30",
+            *map(str, chunk),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=SEMGREP_TIMEOUT_S, check=False
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            log.warning("semgrep failed: %s", exc)
+            continue
+        try:
+            data = json.loads(proc.stdout)
+        except (json.JSONDecodeError, TypeError):
+            log.warning(
+                "semgrep exited with %s and no JSON: %s", proc.returncode, proc.stderr[:300]
+            )
+            continue
+        if isinstance(data, dict):
+            ok = True
+            merged["results"].extend(data.get("results", []))
+    return merged if ok else None
 
 
 def _path_map(ws: Workspace, rels: list[str]) -> dict[str, str]:
@@ -173,10 +237,10 @@ def _hits_by_file(
     return out
 
 
-def _config_ref(ws: Workspace, name: str) -> CodeRef | None:
+def _config_ref(ws: Workspace, name: str, present: set[str]) -> CodeRef | None:
     """Line of `verify_jwt = false` inside [functions.<name>] in supabase/config.toml."""
     cfg = read_function_config(ws).get(name, {})
-    text = _read(ws, "supabase/config.toml")
+    text = _read(ws, "supabase/config.toml", present)
     if cfg.get("verify_jwt") is not False or text is None:
         return None
     header = re.compile(rf"""^\s*\[functions\.["']?{re.escape(name)}["']?\]\s*(#.*)?$""")
@@ -230,7 +294,9 @@ def _paid_hosts(t: Target) -> dict[str, int]:
     return hosts
 
 
-def _analyze(ws: Workspace, t: Target, authed: bool, text: str) -> list[Finding]:
+def _analyze(
+    ws: Workspace, t: Target, authed: bool, text: str, present: set[str], mw_auth: bool
+) -> list[Finding]:
     out: list[Finding] = []
     handler = _handler_ref(t)
 
@@ -252,15 +318,20 @@ def _analyze(ws: Workspace, t: Target, authed: bool, text: str) -> list[Finding]
             )
         if not hosts:
             refs = [handler]
-            if t.is_function and (cfg := _config_ref(ws, t.name)) is not None:
+            if t.is_function and (cfg := _config_ref(ws, t.name, present)) is not None:
                 refs.append(cfg)
+            soft = mw_auth and not t.is_function
             out.append(
                 Finding(
                     id=f"m5-{_slug(t.name)}",
                     mistake=5,
-                    severity="high",
-                    status="confirmed",
-                    title=f"Anyone on the internet can call {t.display}",
+                    severity="medium" if soft else "high",
+                    status="possible" if soft else "confirmed",
+                    title=(
+                        f"{t.display} has no sign-in check of its own (middleware may cover it)"
+                        if soft
+                        else f"Anyone on the internet can call {t.display}"
+                    ),
                     node_ids=[t.node_id],
                     refs=refs,
                     source="heist",
@@ -338,28 +409,32 @@ def _community_findings(data: dict[str, Any], app_root: Path, files: set[str]) -
 
 def find_function_issues(ws: Workspace, g: AppGraph) -> list[Finding]:
     present = set(ws.files)
-    scan_rels = [r for r in ws.files if r.startswith(FUNCTIONS_DIR) and r.endswith(SOURCE_EXTS)]
     texts: dict[str, str] = {}
-    for rel in scan_rels:
-        if (t := _read(ws, rel)) is not None:
-            texts[rel] = t
     for rel in ws.files:
-        if not rel.endswith(SOURCE_EXTS) or rel in texts:
+        if not rel.endswith(SOURCE_EXTS):
             continue
-        t = _read(ws, rel)
-        if t is not None and ("use server" in t or re.search(r"(^|/)route\.(ts|js)$", rel)):
+        in_functions = rel.startswith(FUNCTIONS_DIR)
+        t = _read(ws, rel, present)
+        if t is not None and (
+            in_functions or "use server" in t or re.search(r"(^|/)route\.(ts|js)$", rel)
+        ):
             texts[rel] = t
 
     targets = _collect_targets(ws, texts)
+    aliases = _alias_map(ws, present)
 
-    # one level of relative imports, so a shared auth helper counts
+    # one level of imports (relative, `@/`, tsconfig paths), so a shared auth helper counts
     imports: dict[str, list[str]] = {}
     for t in targets:
-        found = _relative_imports(t.rel, texts[t.rel], present)
+        found = _resolve_imports(t.rel, texts[t.rel], present, aliases)
         imports[t.rel] = found
         for h in found:
-            if h not in texts and (ht := _read(ws, h)) is not None:
+            if h not in texts and (ht := _read(ws, h, present)) is not None:
                 texts[h] = ht
+    middleware = [m for m in MIDDLEWARE_FILES if m in present]
+    for m in middleware:
+        if m not in texts and (mt := _read(ws, m, present)) is not None:
+            texts[m] = mt
 
     out: list[Finding] = []
     if targets:
@@ -367,15 +442,17 @@ def find_function_issues(ws: Workspace, g: AppGraph) -> list[Finding]:
         data = _run_semgrep(str(RULES_DIR), [ws.app_root / r for r in rels])
         if data is not None:
             by_file = _hits_by_file(data, _path_map(ws, rels), texts)
-            has_auth = {
-                rel: any(h.rule == "heist-auth-call" for h in hits) for rel, hits in by_file.items()
-            }
+
+            def has(rel: str, *rules: str) -> bool:
+                return any(h.rule in rules for h in by_file.get(rel, []))
+
+            public = ("heist-auth-flow", "heist-auth-reexport")
+            mw_auth = any(has(m, "heist-auth-call") for m in middleware)
             for t in targets:
                 t.hits = by_file.get(t.rel, [])
-                authed = has_auth.get(t.rel, False) or any(
-                    has_auth.get(h, False) for h in imports.get(t.rel, [])
-                )
-                out.extend(_analyze(ws, t, authed, texts[t.rel]))
+                files = [t.rel, *imports.get(t.rel, [])]
+                authed = any(has(f, "heist-auth-call") for f in files) or has(t.rel, *public)
+                out.extend(_analyze(ws, t, authed, texts[t.rel], present, mw_auth))
 
     if os.environ.get(COMMUNITY_ENV) == "1":
         sources = [r for r in ws.files if r.endswith(SOURCE_EXTS)]

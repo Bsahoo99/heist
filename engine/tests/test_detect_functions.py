@@ -125,7 +125,9 @@ def test_use_server_action_without_auth(tmp_path):
 
 def test_missing_semgrep_returns_empty(vuln_app_path, monkeypatch, caplog):
     monkeypatch.setattr(functions.shutil, "which", lambda _name: None)
-    assert _run(vuln_app_path) == []
+    with caplog.at_level("WARNING"):
+        assert _run(vuln_app_path) == []
+    assert "semgrep not found" in caplog.text
 
 
 def test_semgrep_failure_returns_empty(vuln_app_path, monkeypatch):
@@ -191,3 +193,112 @@ def test_community_hit_mapping():
         "possible",
         "semgrep_community",
     )
+
+
+def test_supabase_auth_callback_route_is_public_by_design(tmp_path):
+    app = _write(
+        tmp_path / "app",
+        {
+            "app/auth/callback/route.ts": (
+                "import { createClient } from '@/utils/supabase/server'\n"
+                "export async function GET(request: Request) {\n"
+                "  const supabase = await createClient()\n"
+                "  await supabase.auth.exchangeCodeForSession('code')\n"
+                "  return Response.redirect('/')\n}\n"
+            ),
+        },
+    )
+    assert _run(app) == []
+
+
+def test_nextauth_routes_are_public_by_design(tmp_path):
+    app = _write(
+        tmp_path / "app",
+        {
+            "app/api/auth/[...nextauth]/route.ts": (
+                "import NextAuth from 'next-auth'\n"
+                "const handler = NextAuth({ providers: [] })\n"
+                "export { handler as GET, handler as POST }\n"
+            ),
+            "app/api/v5/auth/route.ts": "export { GET, POST } from '@/auth'\n",
+            "app/api/v5b/auth/route.ts": (
+                "import { handlers } from '@/auth'\nexport const { GET, POST } = handlers\n"
+            ),
+        },
+    )
+    assert _run(app) == []
+
+
+def test_alias_import_helper_with_auth_counts(tmp_path):
+    app = _write(
+        tmp_path / "app",
+        {
+            "src/lib/guard.ts": "export async function requireUser(c: any) { return c.auth.getUser() }\n",
+            "src/app/api/a/route.ts": (
+                "import { requireUser } from '@/lib/guard'\n"
+                "export async function GET() {\n  await requireUser(1)\n  return Response.json(1)\n}\n"
+            ),
+            "tsconfig.json": '{"compilerOptions": {"paths": {"~~/*": ["./src/lib/*"]}}}',
+            "src/app/api/b/route.ts": (
+                "import { requireUser } from '~~/guard'\n"
+                "export async function GET() {\n  await requireUser(1)\n  return Response.json(1)\n}\n"
+            ),
+        },
+    )
+    assert _run(app) == []
+
+
+def test_middleware_auth_downgrades_route_m5(tmp_path):
+    app = _write(
+        tmp_path / "app",
+        {
+            "middleware.ts": (
+                "export async function middleware(req: any) {\n"
+                "  const { data } = await supa.auth.getUser()\n  return data\n}\n"
+            ),
+            "app/api/x/route.ts": "export async function GET() {\n  return Response.json(1)\n}\n",
+            "supabase/functions/open/index.ts": "Deno.serve(() => new Response('hi'))\n",
+        },
+    )
+    by = {x.evidence["function"]: x for x in _run(app)}
+    assert (by["route:/api/x"].severity, by["route:/api/x"].status) == ("medium", "possible")
+    assert "middleware" in by["route:/api/x"].title
+    assert (by["open"].severity, by["open"].status) == ("high", "confirmed")
+
+
+def test_third_party_get_user_is_not_auth(tmp_path):
+    app = _write(
+        tmp_path / "app",
+        {
+            "app/api/x/route.ts": (
+                "export async function GET() {\n  const u = await clerk.users.getUser('u')\n"
+                "  return Response.json(u)\n}\n"
+            ),
+        },
+    )
+    assert [x.mistake for x in _run(app)] == [5]
+
+
+def test_crlf_line_numbers(tmp_path):
+    src = "// a\r\n// b\r\n// c\r\nDeno.serve(() => new Response('x'))\r\n"
+    app = _write(tmp_path / "app", {})
+    p = app / "supabase/functions/crlf/index.ts"
+    p.parent.mkdir(parents=True)
+    p.write_bytes(src.encode())
+    f = _run(app)
+    assert [(x.mistake, x.refs[0].start_line) for x in f] == [(5, 4)]
+
+
+def test_semgrep_runs_in_chunks(vuln_app_path, monkeypatch):
+    monkeypatch.setattr(functions, "SEMGREP_CHUNK", 2)
+    calls: list[int] = []
+    real = subprocess.run
+
+    def spy(cmd, *a, **k):
+        calls.append(len(cmd))
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(functions.subprocess, "run", spy)
+    by = {(x.mistake, x.evidence["function"]) for x in _run(vuln_app_path)}
+    assert len(calls) == 2
+    assert {(5, "send-email"), (7, "ai-describe"), (6, "update-request")} <= by
