@@ -36,7 +36,7 @@ def reply(content: dict) -> httpx.Response:
 
 
 def client() -> MetaClient:
-    return MetaClient("spark", "open", SpendTracker())
+    return MetaClient("spark", "open", SpendTracker(), max_retries=0)
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def test_triage_falls_back_to_input_when_model_fails(setup):
     ws, g, findings = setup
     with respx.mock() as router:
         router.post(OPEN_URL).respond(500)
-        out = triage(findings, g, ws, MetaClient("spark", "open", SpendTracker()))
+        out = triage(findings, g, ws, client())
     assert out == findings
 
 
@@ -141,3 +141,35 @@ def test_triage_request_contains_context_and_no_extra_fields(setup):
     assert len(items) == len(findings)
     assert set(items[0]) == {"id", "mistake", "severity", "title", "source", "where", "code"}
     assert any(i["code"] for i in items)
+
+
+@pytest.mark.parametrize(
+    ("primary", "other", "expected"),
+    [
+        ("proved", "confirmed", "proved"),
+        ("confirmed", "proved", "proved"),
+        ("possible", "proved", "proved"),
+        ("possible", "confirmed", "confirmed"),
+        ("confirmed", "possible", "confirmed"),
+    ],
+)
+def test_merge_keeps_strongest_status(setup, primary, other, expected):
+    ws, g, _ = setup
+    a, b = mk("a", "gitleaks", status=primary), mk("b", "gitleaks", status=other)
+    with respx.mock() as router:
+        router.post(OPEN_URL).mock(return_value=reply({"groups": [["a", "b"]], "noise": []}))
+        out = triage([a, b], g, ws, client())
+    assert out[0].status == expected
+
+
+def test_heist_finding_is_always_group_primary(setup):
+    ws, g, _ = setup
+    a = mk("a", "gitleaks", "high")
+    h = mk("h", "heist", "low", line=2)
+    with respx.mock() as router:
+        router.post(OPEN_URL).mock(return_value=reply({"groups": [["a", "h"]], "noise": []}))
+        out = triage([a, h], g, ws, client())
+    assert [f.id for f in out] == ["h"]
+    assert out[0].source == "heist"
+    assert out[0].severity == "high"
+    assert len(out[0].refs) == 2

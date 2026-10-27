@@ -189,3 +189,20 @@ def test_spend_tracker_is_thread_safe():
     for th in threads:
         th.join()
     assert t.total_usd == pytest.approx(400 * 1.25)
+
+
+def test_empty_choices_raises_model_output_error(mock_meta):
+    body = completion("x")
+    body["choices"] = []
+    mock_meta.post(OPEN_URL).respond(json=body)
+    with pytest.raises(ModelOutputError):
+        MetaClient("spark", "open", SpendTracker()).chat_json("open", "s", "u", Ok)
+
+
+def test_length_finish_with_empty_content_is_diagnosable(mock_meta):
+    body = completion("")
+    body["choices"][0]["finish_reason"] = "length"
+    mock_meta.post(OPEN_URL).respond(json=body)
+    with pytest.raises(ModelOutputError) as ei:
+        MetaClient("spark", "open", SpendTracker()).chat_json("open", "s", "u", Ok)
+    assert "finish_reason=length" in ei.value.errors

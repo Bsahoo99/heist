@@ -124,6 +124,7 @@ class MetaClient:
         spark_base_url: str = "",
         open_key: str = "",
         open_base_url: str = "",
+        max_retries: int = MAX_RETRIES,
     ):
         self.tracker = tracker
         self._spark_model = spark_model
@@ -131,19 +132,19 @@ class MetaClient:
         tracker.register_open(open_model)
         self._secrets = [s for s in (spark_key, open_key) if s]
         self._clients = {
-            "spark": self._make(spark_key, spark_base_url or DEFAULT_META_BASE_URL),
-            "open": self._make(open_key, open_base_url or DEFAULT_OPEN_BASE_URL),
+            "spark": self._make(spark_key, spark_base_url or DEFAULT_META_BASE_URL, max_retries),
+            "open": self._make(open_key, open_base_url or DEFAULT_OPEN_BASE_URL, max_retries),
         }
         # Providers (keyed "spark"/"open") that rejected json_schema; they use json_object.
         self._downgraded: set[str] = set()
 
     @staticmethod
-    def _make(key: str, base_url: str) -> openai.OpenAI:
+    def _make(key: str, base_url: str, max_retries: int) -> openai.OpenAI:
         return openai.OpenAI(
             api_key=key or "unset",
             base_url=base_url,
             timeout=TIMEOUT_S,
-            max_retries=MAX_RETRIES,
+            max_retries=max_retries,
             # openai 3.x defaults to httpx2, which respx cannot mock. Plain httpx keeps tests offline.
             http_client=httpx.Client(timeout=TIMEOUT_S),  # pyright: ignore[reportArgumentType]
         )
@@ -229,7 +230,12 @@ class MetaClient:
             )
         if resp.usage is not None:
             self.tracker.add(model, resp.usage)
-        raw = resp.choices[0].message.content or ""
+        if not resp.choices:
+            raise ModelOutputError("", "response contained no choices")
+        choice = resp.choices[0]
+        raw = choice.message.content or ""
+        if not raw.strip() and choice.finish_reason == "length":
+            raise ModelOutputError("", "model ran out of tokens (finish_reason=length)")
         try:
             return schema.model_validate_json(strip_fences(raw))
         except ValidationError as exc:

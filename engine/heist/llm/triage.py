@@ -12,6 +12,7 @@ from heist.models import AppGraph, Finding
 log = logging.getLogger(__name__)
 
 DROPPABLE = {"semgrep_community", "gitleaks"}
+_STATUS_RANK = {"possible": 0, "confirmed": 1, "proved": 2}
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 CONTEXT_RADIUS = 1
 # Muse Spark Open spends thousands of reasoning tokens here; 4000 returned empty content in 4 of 5 runs.
@@ -74,7 +75,7 @@ def _merge(primary: Finding, other: Finding) -> Finding:
             refs.append(r)
     node_ids = list(dict.fromkeys([*primary.node_ids, *other.node_ids]))
     severity = min(primary.severity, other.severity, key=_SEVERITY_RANK.__getitem__)
-    status = "confirmed" if "confirmed" in (primary.status, other.status) else primary.status
+    status = max(primary.status, other.status, key=_STATUS_RANK.__getitem__)
     return primary.model_copy(
         update={"refs": refs, "node_ids": node_ids, "severity": severity, "status": status}
     )
@@ -94,6 +95,7 @@ def triage(
         return findings
 
     by_id = {f.id: f for f in findings}
+    order = [f.id for f in findings]
     dropped = {i for i in out.noise if i in by_id and by_id[i].source in DROPPABLE}
     merged_into: dict[str, str] = {}  # secondary id -> primary id
     merged: dict[str, Finding] = {}
@@ -103,6 +105,9 @@ def triage(
         if len(ids) < 2:
             continue
         claimed.update(ids)
+        heist_ids = [i for i in order if i in ids and by_id[i].source == "heist"]
+        if heist_ids and by_id[ids[0]].source != "heist":
+            ids = [heist_ids[0], *[i for i in ids if i != heist_ids[0]]]
         primary = ids[0]
         result = by_id[primary]
         for other in ids[1:]:
