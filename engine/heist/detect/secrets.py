@@ -18,7 +18,10 @@ log = logging.getLogger(__name__)
 
 FRONT_PREFIXES = ("VITE_", "NEXT_PUBLIC_")
 SECRET_NAME_RE = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|PASSWD", re.IGNORECASE)
-ENV_EXCLUDED = {".env.example", ".env.sample", ".env.template"}
+ENV_EXCLUDED_SUFFIXES = (".example", ".sample", ".template")
+PUBLIC_NAME_RE = re.compile(r"ANON|PUBLISHABLE|SITE_KEY|PUBLIC_KEY", re.IGNORECASE)
+PUBLIC_VALUE_PREFIXES = ("sb_publishable_", "pk_live_", "pk_test_", "phc_", "AIza")
+URL_NAME_LINE_RE = re.compile(r"[A-Za-z0-9_]*_URL\b\s*[:=]", re.IGNORECASE)
 SOURCE_EXTS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"}
 SERVICE_ROLE_RE = re.compile(r"\b[A-Za-z0-9_]*SERVICE_ROLE[A-Za-z0-9_]*\b")
 ENV_ACCESS_RE = re.compile(r"\benv\b")
@@ -28,9 +31,14 @@ ROUTE_RE = re.compile(r"(?:^|/)app/(?:.*/)?route\.(?:ts|js|tsx|jsx)$")
 GITLEAKS_TIMEOUT = 60
 
 
+def _is_env_named(rel: str) -> bool:
+    name = rel.rsplit("/", 1)[-1]
+    return name == ".env" or name.startswith(".env.")
+
+
 def _is_env_file(rel: str) -> bool:
     name = rel.rsplit("/", 1)[-1]
-    return (name == ".env" or name.startswith(".env.")) and name not in ENV_EXCLUDED
+    return _is_env_named(rel) and not name.endswith(ENV_EXCLUDED_SUFFIXES)
 
 
 def _read(ws: Workspace, rel: str) -> str | None:
@@ -76,7 +84,7 @@ def _jwt_role(value: str) -> str | None:
 
 
 def _is_public_by_design(value: str) -> bool:
-    if value.startswith("sb_publishable_"):
+    if value.startswith(PUBLIC_VALUE_PREFIXES):
         return True
     if re.match(r"^https?://\S+$", value, re.IGNORECASE):
         return True
@@ -84,7 +92,7 @@ def _is_public_by_design(value: str) -> bool:
 
 
 def _preview(value: str) -> str:
-    return value[:4] + "..."
+    return value[: min(4, len(value) // 2)] + "..."
 
 
 def _slug(text: str) -> str:
@@ -151,7 +159,11 @@ def _env_findings(
                 )
                 flagged.add((rel, line_no))
                 continue
-            if _is_public_by_design(value) or name.upper().endswith("_URL"):
+            if (
+                _is_public_by_design(value)
+                or name.upper().endswith("_URL")
+                or PUBLIC_NAME_RE.search(name)
+            ):
                 continue
             if not SECRET_NAME_RE.search(name):
                 continue
@@ -220,6 +232,17 @@ def _service_role_findings(ws: Workspace, g: AppGraph, scope: dict[str, bool]) -
     return findings
 
 
+def _public_name_on_line(ws: Workspace, rel: str, line_no: int) -> bool:
+    text = _read(ws, rel)
+    if text is None:
+        return False
+    lines = text.splitlines()
+    if not 1 <= line_no <= len(lines):
+        return False
+    line = lines[line_no - 1]
+    return bool(PUBLIC_NAME_RE.search(line) or URL_NAME_LINE_RE.search(line))
+
+
 def _gitleaks_findings(
     ws: Workspace, scope: dict[str, bool], flagged: set[tuple[str, int]]
 ) -> list[Finding]:
@@ -262,17 +285,17 @@ def _gitleaks_findings(
         try:
             rel = Path(str(hit["File"])).resolve().relative_to(root).as_posix()  # pyright: ignore[reportUnknownArgumentType]
             line_no = int(hit["StartLine"])  # pyright: ignore[reportUnknownArgumentType]
+            end = int(hit.get("EndLine", line_no))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             rule = str(hit.get("RuleID", "secret"))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             secret = str(hit.get("Secret", ""))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         except (KeyError, ValueError, TypeError):
             continue
-        if rel not in files or _is_env_file(rel) or rel in ENV_EXCLUDED:
+        if rel not in files or _is_env_named(rel):
             continue
         if not _in_frontend_scope(ws, rel, scope) or (rel, line_no) in flagged:
             continue
-        if _is_public_by_design(secret):
+        if _is_public_by_design(secret) or _public_name_on_line(ws, rel, line_no):
             continue
-        end = int(hit.get("EndLine", line_no))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         findings.append(
             Finding(
                 id=f"m1-gitleaks-{_slug(rule)}-{_slug(rel)}-{line_no}",

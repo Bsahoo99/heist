@@ -99,3 +99,43 @@ def test_missing_gitleaks_is_not_fatal(tmp_copy, vuln_app_path, monkeypatch):
     monkeypatch.setattr("heist.detect.secrets.shutil.which", lambda _n: None)
     f = findings_for(vuln_app_path, find_frontend_secrets)
     assert any(x.mistake == 1 for x in f)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "VITE_SUPABASE_ANON_KEY=changeme",
+        "VITE_STRIPE_PUBLISHABLE_KEY=pk_live_abc123",
+        "NEXT_PUBLIC_FIREBASE_API_KEY=AIzaSyFake",
+        "VITE_RECAPTCHA_SITE_KEY=abcdefghij",
+    ],
+)
+def test_public_browser_keys_not_flagged(tmp_copy, vuln_app_path, line):
+    root = tmp_copy(vuln_app_path)
+    (root / ".env").write_text(line + "\n")
+    (root / "src/lib/admin.ts").unlink()
+    assert findings_for(root, find_frontend_secrets) == []
+
+
+def test_env_local_example_ignored(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / ".env").write_text("")
+    (root / ".env.local.example").write_text("VITE_OPENAI_API_KEY=sk-abcdef123456\n")
+    (root / "src/lib/admin.ts").unlink()
+    assert findings_for(root, find_frontend_secrets) == []
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+def test_nested_env_example_not_scanned_by_gitleaks(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/.env.example").write_text(f"X={GH_LIT}\n")
+    f = findings_for(root, find_frontend_secrets)
+    assert [x for x in f if x.source == "gitleaks"] == []
+
+
+def test_preview_does_not_reveal_short_values(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / ".env").write_text("VITE_A_KEY=abc\n")
+    (root / "src/lib/admin.ts").unlink()
+    m1 = findings_for(root, find_frontend_secrets)
+    assert m1[0].evidence["preview"] == "a..."
