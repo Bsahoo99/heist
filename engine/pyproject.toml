@@ -28,6 +28,7 @@ packages = ["heist"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+norecursedirs = ["tests/fixtures"]
 
 [tool.ruff]
 line-length = 100

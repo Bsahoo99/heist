@@ -1,0 +1,5 @@
+project_id = "heistfixture"
+
+[functions.send-email]
+# HEIST-FIXTURE: m5
+verify_jwt = false

@@ -1,0 +1,4 @@
+project_id = "heistfixture"
+
+[functions.send-email]
+verify_jwt = true
