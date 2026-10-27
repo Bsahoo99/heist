@@ -36,7 +36,7 @@ target-version = "py312"
 
 [tool.pyright]
 pythonVersion = "3.12"
-include = ["heist", "tests"]
+include = ["heist", "tests", "scripts"]
 
 [dependency-groups]
 dev = [
