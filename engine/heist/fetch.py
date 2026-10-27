@@ -66,6 +66,7 @@ def _is_ignored_rel(rel: str) -> bool:
 def _walk(root: Path) -> list[str]:
     """All kept files under root, relative POSIX paths. Raises if over the file cap."""
     out: list[str] = []
+    real_root = root.resolve()
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = Path(dirpath).relative_to(root).as_posix()
         rel_dir = "" if rel_dir == "." else rel_dir
@@ -80,19 +81,24 @@ def _walk(root: Path) -> list[str]:
             rel = f"{rel_dir}/{name}".lstrip("/")
             if _is_ignored_rel(rel):
                 continue
+            full = Path(dirpath) / name
+            if full.is_symlink() or not full.resolve().is_relative_to(real_root):
+                continue
             out.append(rel)
             if len(out) > MAX_FILES:
                 raise UnsupportedRepo(TOO_BIG_COPY.format(why="over 2,000 files"))
     return sorted(out)
 
 
-def _has_supabase(pkg_json: Path) -> bool:
-    deps = _read_deps(pkg_json)
+def _has_supabase(root: Path, pkg_json: Path) -> bool:
+    deps = _read_deps(root, pkg_json)
     return deps is not None and "@supabase/supabase-js" in deps
 
 
-def _read_deps(pkg_json: Path) -> set[str] | None:
+def _read_deps(root: Path, pkg_json: Path) -> set[str] | None:
     try:
+        if pkg_json.is_symlink() or not pkg_json.resolve().is_relative_to(root.resolve()):
+            return None
         data = json.loads(pkg_json.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
@@ -115,7 +121,7 @@ def _find_app_root(root: Path) -> Path:
             level.append(queue.popleft())
         level.sort(key=lambda item: item[0].as_posix())
         for directory, _ in level:
-            if _has_supabase(directory / "package.json"):
+            if _has_supabase(root, directory / "package.json"):
                 return directory
         if depth >= MAX_APP_DEPTH:
             continue
@@ -140,7 +146,7 @@ def load_workspace(path: Path, commit_sha: str = "local") -> Workspace:
     total = 0
     for rel in all_files:
         try:
-            total += (root / rel).stat().st_size
+            total += (root / rel).lstat().st_size
         except OSError:
             continue
         if total > MAX_BYTES:
@@ -160,7 +166,17 @@ def clone_repo(url: str, dest: Path) -> Workspace:
     clone_url = f"https://github.com/{owner}/{repo}.git"
     try:
         proc = subprocess.run(
-            ["git", "clone", "--depth", "1", "--single-branch", clone_url, str(dest)],
+            [
+                "git",
+                "-c",
+                "core.symlinks=false",
+                "clone",
+                "--depth",
+                "1",
+                "--single-branch",
+                clone_url,
+                str(dest),
+            ],
             check=False,
             env=env,
             capture_output=True,
@@ -171,20 +187,25 @@ def clone_repo(url: str, dest: Path) -> Workspace:
         raise UnsupportedRepo(CLONE_FAILED_COPY) from None
     if proc.returncode != 0:
         raise UnsupportedRepo(CLONE_FAILED_COPY)
-    sha_proc = subprocess.run(
-        ["git", "-C", str(dest), "rev-parse", "HEAD"],
-        check=False,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    sha = sha_proc.stdout.strip() or "unknown"
+    try:
+        sha_proc = subprocess.run(
+            ["git", "-C", str(dest), "rev-parse", "HEAD"],
+            check=False,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        raise UnsupportedRepo(CLONE_FAILED_COPY) from None
+    sha = sha_proc.stdout.strip()
+    if sha_proc.returncode != 0 or not sha:
+        raise UnsupportedRepo(CLONE_FAILED_COPY)
     return load_workspace(dest, sha)
 
 
 def detect_stack(ws: Workspace) -> Stack:
-    deps = _read_deps(ws.app_root / "package.json")
+    deps = _read_deps(ws.root, ws.app_root / "package.json")
     if deps is None or "@supabase/supabase-js" not in deps:
         raise UnsupportedRepo(UNSUPPORTED_STACK_COPY)
     if "next" in deps:

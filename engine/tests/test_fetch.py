@@ -117,3 +117,55 @@ def test_app_graph_node_lookup():
     assert g.node("a") is n
     with pytest.raises(KeyError):
         g.node("missing")
+
+
+def test_symlinked_file_excluded(vuln_app_path, tmp_copy, tmp_path):
+    secret = tmp_path / "outside.txt"
+    secret.write_text("secret")
+    root = tmp_copy(vuln_app_path)
+    (root / "leak.ts").symlink_to(secret)
+    ws = load_workspace(root)
+    assert "leak.ts" not in ws.files
+    assert ".env" in ws.files
+
+
+def test_symlinked_package_json_treated_as_missing(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"dependencies": {"vite": "1", "@supabase/supabase-js": "2"}}')
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "package.json").symlink_to(outside)
+    with pytest.raises(UnsupportedRepo, match="not supported yet"):
+        detect_stack(load_workspace(root))
+
+
+def test_clone_disables_symlinks(monkeypatch, vuln_app_path, tmp_path):
+    dest = tmp_path / "dest"
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "clone" in cmd:
+            shutil.copytree(vuln_app_path, dest)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "abc\n", "")
+
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    clone_repo("https://github.com/acme/pawpal", dest)
+    clone_cmd = next(c for c in calls if "clone" in c)
+    assert "core.symlinks=false" in clone_cmd
+    assert clone_cmd.index("core.symlinks=false") < clone_cmd.index("clone")
+
+
+def test_rev_parse_failure_raises_unsupported(monkeypatch, vuln_app_path, tmp_path):
+    dest = tmp_path / "dest"
+
+    def fake_run(cmd, **kwargs):
+        if "clone" in cmd:
+            shutil.copytree(vuln_app_path, dest)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise subprocess.TimeoutExpired(cmd, 60)
+
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    with pytest.raises(UnsupportedRepo, match="couldn't fetch"):
+        clone_repo("https://github.com/acme/pawpal", dest)
