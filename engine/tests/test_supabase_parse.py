@@ -137,3 +137,56 @@ def test_storage_objects_policies_and_bucket_column_order(tmp_path):
     assert db.tables == {}
     assert [p.name for p in db.storage_policies] == ["read"]
     assert db.storage_policies[0].using == "(bucket_id = 'b1')"
+
+
+def test_line_refs_after_non_ascii_prefix(tmp_path):
+    _write(
+        tmp_path,
+        "supabase/migrations/001.sql",
+        "-- \U0001f600\U0001f600\U0001f600 é é\n-- ünï\n\n"
+        "create table t (id int);\n\n"
+        "create policy p on t using (true);\n",
+    )
+    db = _db(load_workspace(tmp_path))
+    assert db.tables["t"].ref.start_line == 4
+    ref = db.tables["t"].policies[0].ref
+    assert ref.start_line == 6 and ref.end_line == 6
+
+
+def test_create_table_if_not_exists_is_noop(tmp_path):
+    _write(
+        tmp_path,
+        "supabase/migrations/001.sql",
+        "create table t (id int);\nalter table t enable row level security;\n"
+        "create policy p on t using (true);\n",
+    )
+    _write(tmp_path, "supabase/migrations/002.sql", "create table if not exists t (id int);\n")
+    t = _db(load_workspace(tmp_path)).tables["t"]
+    assert t.rls_enabled is True and len(t.policies) == 1
+
+
+def test_short_bucket_row_does_not_raise(tmp_path):
+    _write(
+        tmp_path,
+        "supabase/migrations/001.sql",
+        "insert into storage.buckets (id, public) values ('a');\n"
+        "insert into storage.buckets (id, public) values ('b', true);\n",
+    )
+    assert set(_db(load_workspace(tmp_path)).buckets) == {"b"}
+
+
+def test_handler_exception_skips_only_that_statement(tmp_path, monkeypatch):
+    from heist.graph import supabase as mod
+
+    def boom(self, s, ref):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mod._Replay, "_on_AlterTableStmt", boom)
+    _write(
+        tmp_path,
+        "supabase/migrations/001.sql",
+        "create table t (id int);\nalter table t enable row level security;\n"
+        "create table u (id int);\n",
+    )
+    db = _db(load_workspace(tmp_path))
+    assert set(db.tables) == {"t", "u"} and db.tables["t"].rls_enabled is False

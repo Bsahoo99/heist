@@ -67,21 +67,21 @@ def _key(schema: str, name: str) -> str:
     return name if schema == "public" else f"{schema}.{name}"
 
 
-def _byte_to_line(data: bytes, offset: int) -> int:
-    return data.count(b"\n", 0, offset) + 1
+def _line_at(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
 
 
-def _skip_noise(data: bytes, pos: int) -> int:
+def _skip_noise(text: str, pos: int) -> int:
     """Advance past whitespace and SQL comments so pos points at the statement keyword."""
-    n = len(data)
+    n = len(text)
     while pos < n:
-        if data[pos : pos + 1].isspace():
+        if text[pos].isspace():
             pos += 1
-        elif data.startswith(b"--", pos):
-            nl = data.find(b"\n", pos)
+        elif text.startswith("--", pos):
+            nl = text.find("\n", pos)
             pos = n if nl == -1 else nl + 1
-        elif data.startswith(b"/*", pos):
-            end = data.find(b"*/", pos + 2)
+        elif text.startswith("/*", pos):
+            end = text.find("*/", pos + 2)
             pos = n if end == -1 else end + 2
         else:
             break
@@ -122,7 +122,10 @@ class _Replay:
             for e in (s.tableElts or ())
             if type(e).__name__ == "ColumnDef"
         ]
-        self.tables[_key(schema, name)] = Table(
+        key = _key(schema, name)
+        if s.if_not_exists and key in self.tables:
+            return
+        self.tables[key] = Table(
             name=name, schema=schema, columns=cols, rls_enabled=False, policies=[], ref=ref
         )
 
@@ -215,6 +218,8 @@ class _Replay:
         if "id" not in names:
             return
         for row in rows:
+            if len(row) < len(names):
+                continue
             id_val = _str_value(row[names.index("id")])
             if id_val is None:
                 continue
@@ -243,18 +248,20 @@ def replay_migrations(ws: Workspace) -> DbSchema | None:
             recorded.append(f"!{rel}")
             continue
         recorded.append(rel)
-        # pglast offsets are byte offsets into the UTF-8 encoding of the text
-        data = text.encode("utf-8")
+        # pglast stmt_location/stmt_len are character offsets into the str
         for raw in stmts:
             loc = raw.stmt_location or 0
-            end = loc + raw.stmt_len if raw.stmt_len else len(data)
-            start = _skip_noise(data, loc)
+            end = loc + raw.stmt_len if raw.stmt_len else len(text)
+            start = _skip_noise(text, loc)
             ref = CodeRef(
                 file=rel,
-                start_line=_byte_to_line(data, start),
-                end_line=_byte_to_line(data, max(start, end - 1)),
+                start_line=_line_at(text, start),
+                end_line=_line_at(text, max(start, end - 1)),
             )
-            state.apply(raw.stmt, ref)
+            try:
+                state.apply(raw.stmt, ref)
+            except Exception:  # noqa: BLE001, S112 - untrusted SQL must never fail the analysis
+                continue
     return DbSchema(
         tables=state.tables,
         buckets=state.buckets,
