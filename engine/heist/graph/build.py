@@ -60,10 +60,18 @@ def build_app_graph(ws: Workspace, stack: Stack) -> AppGraph:
         cur = merged.get(n.id)
         if cur is None or (cur.ref is None and n.ref is not None):
             merged[n.id] = n
+    kept = []
+    for e in edges:
+        for end in (e.src, e.dst):
+            if end not in merged and end.startswith("fn:"):
+                name = end[3:]
+                merged[end] = Node(id=end, kind="function", name=name, zone="side_doors", ref=None)
+        if e.src in merged and e.dst in merged:
+            kept.append(e)
     return AppGraph(
         stack=stack,
         nodes=list(merged.values()),
-        edges=edges,
+        edges=kept,
         has_db_rules=db is not None,
         db=db,
     )

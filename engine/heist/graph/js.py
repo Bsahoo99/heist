@@ -36,6 +36,8 @@ def _literal(node: Any) -> str | None:
     if node is None:
         return None
     if node.type == "string":
+        if any(c.type == "escape_sequence" for c in node.children):
+            return None
         return "".join(_text(c) for c in node.children if c.type == "string_fragment")
     if node.type == "template_string":
         if any(c.type == "template_substitution" for c in node.children):
@@ -93,7 +95,7 @@ def _calls(root: Any) -> Iterator[tuple[str, str, Any, Any]]:
         args = n.child_by_field_name("arguments")
         first = args.named_children[0] if args is not None and args.named_children else None
         value = _literal(first)
-        if fn is None or value is None:
+        if fn is None or not value:
             continue
         if fn.type == "identifier" and _text(fn) == "fetch":
             if value.lower().startswith("https://"):

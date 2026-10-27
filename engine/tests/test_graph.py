@@ -98,3 +98,42 @@ def test_next_route_and_server_action(tmp_path):
     assert ("route:/api/pets/[id]", "table:pets", "queries") in e
     assert ("route:action:app/actions.ts", "table:notes", "queries") in e
     assert g.has_db_rules is False
+
+
+def _assert_edges_resolve(g):
+    ids = {n.id for n in g.nodes}
+    for e in g.edges:
+        assert e.src in ids and e.dst in ids, e
+
+
+def test_edges_resolve_in_fixtures(vuln_app_path, clean_app_path):
+    for p in (vuln_app_path, clean_app_path):
+        _assert_edges_resolve(build_app_graph(load_workspace(p), "vite_supabase"))
+
+
+def test_missing_function_nodes_are_synthesized(tmp_path):
+    _write(
+        tmp_path,
+        "supabase/functions/hook/main.ts",
+        "supabase.from('notes').select()\n",
+    )
+    _write(tmp_path, "src/A.tsx", "supabase.functions.invoke('ghost')\n")
+    g = build_app_graph(load_workspace(tmp_path), "vite_supabase")
+    _assert_edges_resolve(g)
+    assert g.node("fn:hook").ref is None
+    assert g.node("fn:ghost").zone == "side_doors"
+    e = {(x.src, x.dst, x.kind) for x in g.edges}
+    assert ("page:src/A.tsx", "fn:ghost", "invokes") in e
+    assert ("fn:hook", "table:notes", "queries") in e
+
+
+def test_empty_literal_skipped(tmp_path):
+    _write(tmp_path, "src/A.tsx", "supabase.from('').select()\n")
+    nodes, edges = scan_js(load_workspace(tmp_path))
+    assert edges == [] and not [n for n in nodes if n.kind == "table"]
+
+
+def test_escape_sequence_literal_skipped(tmp_path):
+    _write(tmp_path, "src/A.tsx", "supabase.from('a\\nb').select()\n")
+    nodes, edges = scan_js(load_workspace(tmp_path))
+    assert edges == [] and not [n for n in nodes if n.kind == "table"]
