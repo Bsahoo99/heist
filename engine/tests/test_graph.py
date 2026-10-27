@@ -137,3 +137,32 @@ def test_escape_sequence_literal_skipped(tmp_path):
     _write(tmp_path, "src/A.tsx", "supabase.from('a\\nb').select()\n")
     nodes, edges = scan_js(load_workspace(tmp_path))
     assert edges == [] and not [n for n in nodes if n.kind == "table"]
+
+
+def test_visitor_node_always_present(vuln_app_path, tmp_path):
+    for ws in (load_workspace(vuln_app_path), load_workspace(tmp_path)):
+        g = build_app_graph(ws, "vite_supabase")
+        v = g.node("visitor")
+        assert (v.kind, v.name, v.zone, v.ref) == ("visitor", "Visitor", "street", None)
+
+
+def test_env_file_nodes(tmp_path):
+    _write(tmp_path, ".env", "VITE_A=1\nVITE_B=2\n# note\n")
+    _write(tmp_path, ".env.local", "VITE_C=3\n")
+    _write(tmp_path, ".env.example", "VITE_A=\n")
+    _write(tmp_path, "web/.env.sample", "VITE_A=\n")
+    _write(tmp_path, ".env.template", "VITE_A=\n")
+    _write(tmp_path, "supabase/functions/.env", "OPENAI_API_KEY=x\n")
+    g = build_app_graph(load_workspace(tmp_path), "vite_supabase")
+    env_nodes = {n.id: n for n in g.nodes if n.kind == "env_file"}
+    assert set(env_nodes) == {"env:.env", "env:.env.local"}
+    n = env_nodes["env:.env"]
+    assert n.zone == "shop_window" and n.name == ".env"
+    assert n.ref is not None and (n.ref.file, n.ref.start_line, n.ref.end_line) == (".env", 1, 3)
+    _assert_edges_resolve(g)
+
+
+def test_vuln_app_env_node(vuln_app_path):
+    g = build_app_graph(load_workspace(vuln_app_path), "vite_supabase")
+    n = g.node("env:.env")
+    assert n.ref is not None and n.ref.end_line == 4

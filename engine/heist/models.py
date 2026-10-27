@@ -70,6 +70,8 @@ class Node(BaseModel):
         "bucket",
         "external_api",
         "auth",
+        "visitor",
+        "env_file",
     ]
     name: str
     zone: ZoneId
@@ -112,3 +114,28 @@ class ProgressEvent(BaseModel):
     kind: Literal["stage", "node_found", "finding", "done", "error"]
     message: str
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class StepOut(BaseModel):
+    """One stop on a traced path. file/line are None only for stops with no code (visitor, auth)."""
+
+    node_id: str
+    zone: ZoneId
+    file: str | None
+    line: int | None
+    data: str
+    story: str
+    why: str
+    code: str
+
+
+class FixOut(BaseModel):
+    explanation: str
+    diff: str
+    prompt: str
+
+
+class TraceOut(BaseModel):
+    ghost_path: list[StepOut]
+    attack_path: list[StepOut]
+    fix: FixOut
