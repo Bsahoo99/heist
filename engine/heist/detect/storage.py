@@ -1,23 +1,24 @@
 """Mistake 4: storage buckets with no access rules, or sensitive buckets open to the web."""
 
 import re
+from typing import Literal
 
 from heist.fetch import Workspace
 from heist.models import AppGraph, Bucket, Finding
 
-SENSITIVE_TOKENS = {"id", "doc", "passport", "private", "invoice", "avatar"}
+SENSITIVE_TOKENS = {"id", "doc", "document", "passport", "private", "invoice", "avatar"}
 
 
 def _is_sensitive(bucket_id: str) -> bool:
     tokens = re.split(r"[-_]+", bucket_id.lower())
-    return any(t in SENSITIVE_TOKENS for t in tokens)
+    return any(t in SENSITIVE_TOKENS or t.removesuffix("s") in SENSITIVE_TOKENS for t in tokens)
 
 
-def _finding(b: Bucket, severity: str, reason: str, title: str) -> Finding:
+def _finding(b: Bucket, severity: Literal["high", "low"], reason: str, title: str) -> Finding:
     return Finding(
         id=f"m4-{b.id}",
         mistake=4,
-        severity=severity,  # pyright: ignore[reportArgumentType]
+        severity=severity,
         status="possible" if severity == "low" else "confirmed",
         title=title,
         node_ids=[f"bucket:{b.id}"],

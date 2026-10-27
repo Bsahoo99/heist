@@ -103,3 +103,39 @@ def test_write_only_and_scoped_policies_do_not_open(tmp_copy, vuln_app_path):
         "create table private.d (id int);\n",
     )
     assert not ({"a", "b", "c", "d", "private.d"} & set(f))
+
+
+_BASE = "create table {t} (id int, user_id uuid);\nalter table {t} enable row level security;\n"
+
+
+def test_restrictive_owner_check_closes_open_policy(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        _BASE.format(t="c")
+        + "create policy p on c for select using (true);\n"
+        + "create policy r on c as restrictive for select using (auth.uid() = user_id);\n",
+    )
+    assert "c" not in f
+
+
+def test_restrictive_for_other_role_does_not_close(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        _BASE.format(t="c")
+        + "create policy p on c for select using (true);\n"
+        + "create policy r on c as restrictive for select to authenticated "
+        + "using (auth.uid() = user_id);\n",
+    )
+    assert f["c"].evidence["reason"] == "open_to_everyone"
+
+
+def test_service_role_ignored_in_roles(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        _BASE.format(t="c")
+        + "create policy p on c for select to authenticated, service_role using (true);\n",
+    )
+    assert f["c"].evidence["reason"] == "open_to_any_user"

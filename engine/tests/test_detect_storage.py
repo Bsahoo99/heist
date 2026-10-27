@@ -65,3 +65,16 @@ def test_no_rules_no_findings(tmp_copy, vuln_app_path):
     root = tmp_copy(vuln_app_path)
     shutil.rmtree(root / "supabase/migrations")
     assert findings_for(root, find_storage_issues) == []
+
+
+def test_plural_tokens(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        "insert into storage.buckets (id, public) values "
+        "('avatars', true), ('user-documents', true), ('videos', true), ('invoices', true);\n",
+    )
+    assert f["avatars"].severity == "high"
+    assert f["user-documents"].severity == "high"
+    assert f["invoices"].severity == "high"
+    assert f["videos"].severity == "low"
