@@ -1,3 +1,4 @@
+import warnings
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -8,15 +9,52 @@ ZoneId = Literal[
 Stack = Literal["vite_supabase", "next_supabase"]
 
 
-class DbSchema(BaseModel):
-    """Placeholder. Task 5 replaces this with the real schema fields."""
-
-
 class CodeRef(BaseModel):
     file: str  # relative to the app root, POSIX separators
     start_line: int
     end_line: int
     symbol: str | None = None
+
+
+class Policy(BaseModel):
+    name: str
+    table: str
+    command: Literal["select", "insert", "update", "delete", "all"]
+    roles: list[str]
+    using: str | None
+    check: str | None
+    ref: CodeRef
+
+
+class Column(BaseModel):
+    name: str
+    type: str
+
+
+with warnings.catch_warnings():
+    # The brief names this field `schema`, which shadows a deprecated BaseModel attribute.
+    warnings.simplefilter("ignore", UserWarning)
+
+    class Table(BaseModel):
+        name: str
+        schema: str  # type: ignore[assignment]
+        columns: list[Column]
+        rls_enabled: bool
+        policies: list[Policy]
+        ref: CodeRef
+
+
+class Bucket(BaseModel):
+    id: str
+    public: bool
+    ref: CodeRef
+
+
+class DbSchema(BaseModel):
+    tables: dict[str, Table]
+    buckets: dict[str, Bucket]
+    storage_policies: list[Policy]
+    migration_files: list[str]
 
 
 class Node(BaseModel):
