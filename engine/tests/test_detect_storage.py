@@ -12,14 +12,17 @@ def _sql(tmp_copy, vuln_app_path, sql):
 
 def test_storage_findings(vuln_app_path):
     f = {x.evidence["bucket"]: x for x in findings_for(vuln_app_path, find_storage_issues)}
-    assert f["id-documents"].severity == "high"
+    assert f["id-documents"].severity == "low"
     assert f["pet-photos"].severity == "low"
 
 
 def test_storage_finding_shape(vuln_app_path):
     f = {x.evidence["bucket"]: x for x in findings_for(vuln_app_path, find_storage_issues)}
     d = f["id-documents"]
-    assert d.mistake == 4 and d.status == "confirmed" and d.id == "m4-id-documents"
+    assert d.mistake == 4 and d.status == "possible" and d.id == "m4-id-documents"
+    assert d.title == (
+        "Nobody can use files in id-documents yet. Add access rules instead of making it public"
+    )
     assert d.node_ids == ["bucket:id-documents"] and d.refs[0].start_line == 5
     assert d.evidence["public"] is False and d.evidence["reason"]
     p = f["pet-photos"]

@@ -61,9 +61,9 @@ def find_storage_issues(ws: Workspace, g: AppGraph) -> list[Finding]:
             out.append(
                 _finding(
                     b,
-                    "high",
+                    "low",
                     "private_no_policy",
-                    f"{b.id} has no access rules, so it is not set up as you expect",
+                    f"Nobody can use files in {b.id} yet. Add access rules instead of making it public",
                 )
             )
     return out
