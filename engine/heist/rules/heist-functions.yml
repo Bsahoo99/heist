@@ -1,0 +1,74 @@
+# Heist rules for Edge Functions and Next route handlers.
+# The rules only locate facts (auth calls, handlers, paid API calls, id filters).
+# heist/detect/functions.py combines them per file, so "no auth check" is decided in
+# Python from the absence of heist-auth-call, which is more robust than a file-level
+# pattern-not-inside and lets a shared auth helper count.
+rules:
+  - id: heist-auth-call
+    message: Verifies who the caller is
+    severity: INFO
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: $C.auth.getUser(...)
+      - pattern: $C.auth.getClaims(...)
+      - pattern: $C.auth.getSession(...)
+      - pattern: $C.getUser(...)
+      - pattern: verifyJWT(...)
+      - pattern: $O.verifyJWT(...)
+      - pattern: jwtVerify(...)
+      - pattern: $O.jwtVerify(...)
+      - pattern: auth()
+      - pattern: await auth()
+      - pattern: getServerSession(...)
+      - pattern: currentUser(...)
+
+  - id: heist-handler
+    message: Request handler
+    severity: INFO
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: Deno.serve(...)
+      - pattern: serve(...)
+      - pattern: export async function $F(...) { ... }
+      - pattern: export function $F(...) { ... }
+      - pattern: export const $F = ...
+
+  - id: heist-paid-api-call
+    message: Calls a paid AI API
+    severity: WARNING
+    languages: [typescript, javascript]
+    patterns:
+      - pattern: fetch($URL, ...)
+      - metavariable-regex:
+          metavariable: $URL
+          regex: '^[`"'']https?://(api\.openai\.com|api\.anthropic\.com|generativelanguage\.googleapis\.com|api\.replicate\.com|api\.meta\.ai)'
+
+  - id: heist-paid-sdk-client
+    message: Creates a paid AI API client
+    severity: WARNING
+    languages: [typescript, javascript]
+    patterns:
+      - pattern: new $CLS(...)
+      - metavariable-regex:
+          metavariable: $CLS
+          regex: '^(OpenAI|Anthropic)$'
+
+  - id: heist-id-from-request
+    message: Filters rows by an id taken from the request
+    severity: WARNING
+    languages: [typescript, javascript]
+    patterns:
+      - pattern-either:
+          - pattern: $C.eq("id", $V)
+          - pattern: $C.eq('id', $V)
+          - pattern: '$C.match({id: $V, ...})'
+          - pattern: '$C.match({..., id: $V})'
+      - metavariable-regex:
+          metavariable: $V
+          regex: '^(body|params|req|request|payload|data|input|json|args|searchParams|url|await|id$|[a-zA-Z]*Id$)'
+
+  - id: heist-service-role-client
+    message: Uses the service role key
+    severity: INFO
+    languages: [typescript, javascript]
+    pattern-regex: SUPABASE_SERVICE_ROLE_KEY

@@ -203,3 +203,15 @@ def scan_js(ws: Workspace) -> tuple[list[Node], list[Edge]]:
                     )
                 )
     return list(nodes.values()), list(edges.values())
+
+
+def route_id_for(rel: str, text: str) -> str | None:
+    """Graph node id if the file is a Next route handler or a "use server" file, else None."""
+    if (path := _route_path(rel)) is not None:
+        return f"route:{path}"
+    if not rel.endswith(SOURCE_EXTS):
+        return None
+    parser = _TSX if rel.endswith((".tsx", ".jsx")) else _TS
+    if _is_use_server(parser.parse(text.encode("utf-8")).root_node):
+        return f"route:action:{rel}"
+    return None
