@@ -190,3 +190,28 @@ def test_handler_exception_skips_only_that_statement(tmp_path, monkeypatch):
     )
     db = _db(load_workspace(tmp_path))
     assert set(db.tables) == {"t", "u"} and db.tables["t"].rls_enabled is False
+
+
+def test_restrictive_policy_flag(tmp_path):
+    _write(
+        tmp_path,
+        "supabase/migrations/001.sql",
+        "create table t (id int);\n"
+        "create policy a on t as restrictive for select using (true);\n"
+        "create policy b on t for select using (true);\n",
+    )
+    pols = {p.name: p for p in _db(load_workspace(tmp_path)).tables["t"].policies}
+    assert pols["a"].permissive is False
+    assert pols["b"].permissive is True
+
+
+def test_cast_boolean_in_bucket_insert(tmp_path):
+    _write(
+        tmp_path,
+        "supabase/migrations/001.sql",
+        "insert into storage.buckets (id, public) values ('a', 'true'::boolean);\n"
+        "insert into storage.buckets (id, public) values ('b', true::bool);\n"
+        "insert into storage.buckets (id, public) values ('c', 'false'::boolean);\n",
+    )
+    db = _db(load_workspace(tmp_path))
+    assert {k: b.public for k, b in db.buckets.items()} == {"a": True, "b": True, "c": False}

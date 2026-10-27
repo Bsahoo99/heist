@@ -89,6 +89,8 @@ def _skip_noise(text: str, pos: int) -> int:
 
 
 def _bool_value(node: Any) -> bool:
+    while type(node).__name__ == "TypeCast":
+        node = node.arg
     val = getattr(node, "val", None)
     if val is None:
         return False
@@ -158,6 +160,7 @@ class _Replay:
             using=_expr(s.qual),
             check=_expr(s.with_check),
             ref=ref,
+            permissive=bool(s.permissive),
         )
         if (schema, name) == ("storage", "objects"):
             self.storage_policies.append(policy)

@@ -24,6 +24,7 @@ class Policy(BaseModel):
     using: str | None
     check: str | None
     ref: CodeRef
+    permissive: bool = True
 
 
 class Column(BaseModel):
