@@ -242,7 +242,7 @@ def _gitleaks_findings(
                     "--exit-code",
                     "0",
                     str(ws.app_root),
-                ],  # fmt: skip
+                ],
                 check=False,
                 capture_output=True,
                 timeout=GITLEAKS_TIMEOUT,
