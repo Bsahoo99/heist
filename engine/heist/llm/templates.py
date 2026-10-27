@@ -11,8 +11,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from heist.fetch import Workspace
-from heist.models import AppGraph, CodeRef, Finding, FixOut, Node, Stack, StepOut, TraceOut
-from heist.validate import scrub_dashes
+from heist.models import (
+    AppGraph,
+    CodeRef,
+    Finding,
+    FixOut,
+    Node,
+    Stack,
+    StepOut,
+    TraceOut,
+    scrub_dashes,
+)
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +48,15 @@ VENDORS = {
 
 def _vendor(host: str) -> str:
     return VENDORS.get(host, host or "the paid API")
+
+
+_VAR_NOISE = {"vite", "next", "public", "key", "api", "secret", "token", "the"}
+
+
+def hosts_for_var(var: str, g: AppGraph) -> list[Node]:
+    """External API nodes whose host matches a secret's name, e.g. VITE_OPENAI_API_KEY."""
+    tokens = [t for t in re.split(r"[_\s]+", var.lower()) if len(t) > 2 and t not in _VAR_NOISE]
+    return [n for n in g.nodes if n.kind == "external_api" and any(t in n.name for t in tokens)]
 
 
 def builder_tool(stack: Stack) -> str:
@@ -296,15 +314,7 @@ def _m1(ctx: _Ctx) -> TraceOut:
     ref = f.refs[0] if f.refs else None
     where = _node_for_ref(ctx, ref) if ref else None
     page = _front(ctx, [], any_page=True)
-    tokens = [
-        t
-        for t in var.lower().split("_")
-        if len(t) > 2 and t not in {"vite", "next", "public", "key", "api", "secret", "token"}
-    ]
-    ext = next(
-        (n for n in ctx.g.nodes if n.kind == "external_api" and any(t in n.name for t in tokens)),
-        None,
-    )
+    ext = next(iter(hosts_for_var(var, ctx.g)), None)
     shop_why = "The front end is shipped to every visitor's browser, so everything in it is public."
 
     ghost = [_visitor(ctx, "A customer walks up to the shop.")]
@@ -412,7 +422,9 @@ def _secret_diff(ctx: _Ctx, ref: CodeRef | None, var: str, replacement: str | No
     lines = ctx.lines(ref.file)
     name = ref.file.rsplit("/", 1)[-1]
     if name == ".env" or name.startswith(".env."):
-        old = [f"{var}={REDACTED}"]
+        real = lines[ref.start_line - 1] if lines and ref.start_line <= len(lines) else ""
+        key = real.split("=", 1)[0].strip() if "=" in real else var
+        old = [f"{key}={REDACTED}"]
         return _file_diff(
             ref.file, [(ref.start_line, old, [] if replacement is None else [replacement])]
         )

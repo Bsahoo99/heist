@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+EM_DASH = "\u2014"
+
 ZoneId = Literal[
     "street", "shop_window", "guard_desk", "side_doors", "vault", "warehouse", "across_road"
 ]
@@ -139,3 +141,26 @@ class TraceOut(BaseModel):
     ghost_path: list[StepOut]
     attack_path: list[StepOut]
     fix: FixOut
+
+
+def scrub_dashes(t: TraceOut) -> TraceOut:
+    def fix(s: str) -> str:
+        return s.replace(f" {EM_DASH} ", " - ").replace(EM_DASH, " - ")
+
+    def step(s: StepOut) -> StepOut:
+        return s.model_copy(
+            update={
+                "data": fix(s.data),
+                "story": fix(s.story),
+                "why": fix(s.why),
+                "code": fix(s.code),
+            }
+        )
+
+    return TraceOut(
+        ghost_path=[step(s) for s in t.ghost_path],
+        attack_path=[step(s) for s in t.attack_path],
+        fix=FixOut(
+            explanation=fix(t.fix.explanation), diff=fix(t.fix.diff), prompt=fix(t.fix.prompt)
+        ),
+    )

@@ -11,9 +11,9 @@ from pydantic import BaseModel
 
 from heist.fetch import Workspace
 from heist.llm.client import ModelOutputError
-from heist.llm.templates import builder_tool, fallback_trace
-from heist.models import AppGraph, Finding, FixOut, StepOut, TraceOut
-from heist.validate import check_trace, scrub_dashes
+from heist.llm.templates import builder_tool, fallback_trace, hosts_for_var
+from heist.models import AppGraph, Finding, FixOut, StepOut, TraceOut, scrub_dashes
+from heist.validate import check_trace
 
 __all__ = [
     "FixOut",
@@ -39,12 +39,18 @@ SECRET_EVIDENCE_KEYS = {"preview", "match", "secret", "value"}
 TraceSource = Literal["model", "model_retry", "fallback"]
 
 _ENV_ASSIGN_RE = re.compile(r"^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*[=:]\s*)(.*)$")
-_STRING_RE = re.compile(r"""(['"`])((?:\\.|(?!\1)[^\\])*)\1""")
 _JWT_RE = re.compile(r"eyJ[\w-]+\.[\w-]+\.[\w-]+")
+# Runs of characters keys are made of. Scanned without regard to quotes, so a stray
+# apostrophe in a comment or JSX text cannot hide a key.
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_\-+/=.]+")
 _KEY_PREFIX_RE = re.compile(
     r"^(?:sk|rk|pk_live|sk_live|sk_test|ghp|gho|github_pat|xox[abpr]|AKIA|glpat|sbp|sb_secret)[-_]"
 )
-_TOKENISH_RE = re.compile(r"^[A-Za-z0-9_\-+/=.]{32,}$")
+SECRET_MIN_LEN = 20
+TOKENISH_MIN_LEN = 32
+# On lines a mistake 1 or 2 finding points at, shorter mixed tokens are hidden too.
+FLAGGED_TOKEN_MIN_LEN = 16
+QUOTES = "'\"`"
 
 
 class JsonChatClient(Protocol):
@@ -88,38 +94,59 @@ def _redact_env(text: str) -> str:
 
 
 def _redact_literals(line: str) -> str:
-    return _STRING_RE.sub(lambda m: f"{m.group(1)}{REDACTED}{m.group(1)}", line)
+    """Replace the contents of every string literal on one line.
 
-
-def _looks_secret(value: str) -> bool:
-    if len(value) < 20 or any(c.isspace() for c in value):
-        return False
-    if _JWT_RE.search(value) or _KEY_PREFIX_RE.match(value):
-        return True
-    return bool(
-        _TOKENISH_RE.match(value)
-        and any(c.isdigit() for c in value)
-        and any(c.isalpha() for c in value)
-    )
-
-
-def _redact_secret_literals(text: str) -> str:
-    def sub(m: re.Match[str]) -> str:
-        return f"{m.group(1)}{REDACTED}{m.group(1)}" if _looks_secret(m.group(2)) else m.group(0)
-
-    return _STRING_RE.sub(sub, _JWT_RE.sub(REDACTED, text))
-
-
-def redact_for_prompt(rel: str, text: str, findings: list[Finding]) -> str:
-    """Remove secret values before any text is sent to a model.
-
-    Every .env* file keeps its variable names but loses its values. On lines that a mistake 1
-    or 2 finding points at in other files, string literal contents are replaced. As a backstop,
-    JWTs and string literals that look like keys are replaced everywhere else too.
+    An opening quote with no closing quote on the line (a multi-line template literal, or an
+    apostrophe in prose) hides the rest of the line, which errs on the side of hiding.
     """
-    if _is_env_named(rel):
-        return _redact_env(text)
-    text = _redact_secret_literals(text)
+    out: list[str] = []
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c not in QUOTES:
+            out.append(c)
+            i += 1
+            continue
+        j = i + 1
+        while j < len(line) and line[j] != c:
+            j += 2 if line[j] == "\\" else 1
+        if j < len(line):
+            out.append(f"{c}{REDACTED}{c}" if j > i + 1 else c + c)
+            i = j + 1
+        else:
+            out.append(f"{c}{REDACTED}")
+            i = len(line)
+    return "".join(out)
+
+
+def _mixed(token: str) -> bool:
+    return any(ch.isdigit() for ch in token) and any(ch.isalpha() for ch in token)
+
+
+def _looks_secret(token: str) -> bool:
+    if len(token) < SECRET_MIN_LEN:
+        return False
+    if _JWT_RE.fullmatch(token) or _KEY_PREFIX_RE.match(token):
+        return True
+    return len(token) >= TOKENISH_MIN_LEN and _mixed(token) and not _looks_like_path(token)
+
+
+def _looks_like_path(token: str) -> bool:
+    """URL and file paths: slash-separated and every part short, like /v1/chat/completions."""
+    parts = [p for p in token.split("/") if p]
+    return len(parts) > 1 and all(len(p) <= 20 for p in parts)
+
+
+def _redact_tokens(line: str, min_len: int | None = None) -> str:
+    def sub(m: re.Match[str]) -> str:
+        t = m.group(0)
+        hit = _looks_secret(t) or (min_len is not None and len(t) >= min_len and _mixed(t))
+        return REDACTED if hit else t
+
+    return _TOKEN_RE.sub(sub, _JWT_RE.sub(REDACTED, line))
+
+
+def _flagged_lines(rel: str, findings: list[Finding]) -> set[int]:
     flagged: set[int] = set()
     for f in findings:
         if f.mistake not in (1, 2):
@@ -127,13 +154,28 @@ def redact_for_prompt(rel: str, text: str, findings: list[Finding]) -> str:
         for r in f.refs:
             if r.file == rel:
                 flagged.update(range(r.start_line, max(r.start_line, r.end_line) + 1))
-    if not flagged:
-        return text
-    lines = text.splitlines()
-    for i in flagged:
-        if 1 <= i <= len(lines):
-            lines[i - 1] = _redact_literals(lines[i - 1])
-    return "\n".join(lines)
+    return flagged
+
+
+def redact_for_prompt(rel: str, text: str, findings: list[Finding]) -> str:
+    """Remove secret values before any text is sent to a model. Works line by line.
+
+    Every .env* file keeps its variable names but loses its values. On lines that a mistake 1
+    or 2 finding points at in other files, string literal contents are replaced. As a backstop,
+    JWTs and key-like tokens are replaced on every line of every file, quotes or not.
+    """
+    if _is_env_named(rel):
+        return _redact_env(text)
+    flagged = _flagged_lines(rel, findings)
+    out: list[str] = []
+    for n, line in enumerate(text.splitlines(), start=1):
+        if n in flagged:
+            out.append(_redact_tokens(_redact_literals(line), FLAGGED_TOKEN_MIN_LEN))
+        else:
+            out.append(_redact_tokens(line))
+    if text.endswith("\n"):
+        out.append("")
+    return "\n".join(out)
 
 
 def _read(ws: Workspace, rel: str) -> str | None:
@@ -164,6 +206,23 @@ def _graph_text(g: AppGraph) -> str:
     return "## Nodes\n" + "\n".join(rows) + "\n\n## Edges\n" + ("\n".join(edges) or "(none)")
 
 
+def _secret_function_files(f: Finding, g: AppGraph) -> list[str]:
+    """For leaked keys: the Edge Functions that should hold the key instead.
+
+    Functions calling the API the key belongs to, else every Edge Function.
+    """
+    by_id = {n.id: n for n in g.nodes}
+    hosts = {n.id for n in hosts_for_var(str(f.evidence.get("var") or ""), g)}
+    fns = [n for n in g.nodes if n.kind == "function" and n.ref is not None]
+    callers = [
+        by_id[e.src]
+        for e in g.edges
+        if e.kind == "calls_external" and e.dst in hosts and e.src in by_id
+    ]
+    chosen = [n for n in callers if n.ref is not None] or fns
+    return list(dict.fromkeys(n.ref.file for n in chosen if n.ref is not None))
+
+
 def _context_files(f: Finding, g: AppGraph) -> tuple[list[str], list[str]]:
     """(primary files, neighbour files), each in a stable order without duplicates."""
     by_id = {n.id: n for n in g.nodes}
@@ -183,6 +242,10 @@ def _context_files(f: Finding, g: AppGraph) -> tuple[list[str], list[str]]:
         ref = by_id[other].ref
         if ref is not None and ref.file not in primary and ref.file not in neighbours:
             neighbours.append(ref.file)
+    if f.mistake in (1, 2):
+        for rel in _secret_function_files(f, g):
+            if rel not in primary and rel not in neighbours:
+                neighbours.append(rel)
     return primary, neighbours
 
 
@@ -213,12 +276,15 @@ def build_user_prompt(
     feedback: str | None = None,
     *,
     cap: int = PROMPT_FILE_CAP,
+    findings: list[Finding] | None = None,
 ) -> str:
+    """The user message. `findings` (all findings of the run) widens secret redaction."""
+    known = [f, *(x for x in findings or [] if x.id != f.id)]
     parts = [
         f"App stack: {g.stack}. The tool that built it: {builder_tool(g.stack)}.",
         "## Finding\n" + _finding_json(f),
         _graph_text(g),
-        "## Files\n" + _files_text(f, g, ws, [f], cap),
+        "## Files\n" + _files_text(f, g, ws, known, cap),
     ]
     if feedback:
         parts.append(
@@ -233,20 +299,32 @@ def trace_finding(
     ws: Workspace,
     client: JsonChatClient,
     feedback: str | None = None,
+    *,
+    findings: list[Finding] | None = None,
 ) -> TraceOut:
-    user = build_user_prompt(f, g, ws, feedback)
+    user = build_user_prompt(f, g, ws, feedback, findings=findings)
     out = client.chat_json("spark", system_prompt(), user, TraceOut, max_tokens=TRACE_MAX_TOKENS)
     return scrub_dashes(out)
 
 
 def trace_with_validation(
-    f: Finding, g: AppGraph, ws: Workspace, client: JsonChatClient
+    f: Finding,
+    g: AppGraph,
+    ws: Workspace,
+    client: JsonChatClient,
+    *,
+    findings: list[Finding] | None = None,
 ) -> tuple[TraceOut, TraceSource]:
-    """Model trace, one retry with feedback, then the deterministic template. Never raises."""
+    """Model trace, one retry with feedback, then the deterministic template. Never raises.
+
+    A first answer with only non-fatal problems is kept in reserve: if the retry fails or is
+    worse, it is returned as "model_retry" instead of falling back.
+    """
     feedback: str | None = None
+    usable: TraceOut | None = None
     for attempt in (1, 2):
         try:
-            t = trace_finding(f, g, ws, client, feedback)
+            t = trace_finding(f, g, ws, client, feedback, findings=findings)
         except ModelOutputError as exc:
             log.warning("trace %s attempt %d: unusable output", f.id, attempt)
             feedback = exc.errors or "the answer could not be parsed as the requested JSON"
@@ -256,10 +334,14 @@ def trace_with_validation(
             feedback = "The previous request failed. Answer again with the requested JSON."
             continue
         report = check_trace(t, f, g, ws)
-        if not report.errors:
+        if not report.needs_retry:
             return report.trace, "model" if attempt == 1 else "model_retry"
-        if attempt == 2 and not report.fatal:
-            return report.trace, "model_retry"
+        if not report.fatal:
+            if attempt == 2:
+                return report.trace, "model_retry"
+            usable = report.trace
         log.warning("trace %s attempt %d: %d problems", f.id, attempt, len(report.errors))
         feedback = "\n".join(f"- {e}" for e in report.errors)
+    if usable is not None:
+        return usable, "model_retry"
     return fallback_trace(f, g, ws), "fallback"

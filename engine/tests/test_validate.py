@@ -27,6 +27,15 @@ EM_DASH = "\u2014"
 FAKE_OPENAI_KEY = "sk-heist-fake-3f9a1c7e5b2d8046af13c9e7b5d20846a1f3c9e7"
 ANON_JWT_SIGNATURE = "dOuy3eyutRCNTWXCCBcY7cT0Tk6tyMmHCoqhvxRjLvc"
 MIGRATION = "supabase/migrations/0001_init.sql"
+GOOD_DIFF = (
+    "--- a/supabase/migrations/0001_init.sql\n"
+    "+++ b/supabase/migrations/0001_init.sql\n"
+    "@@ -40,2 +40,4 @@\n"
+    "   body text\n"
+    " );\n"
+    "+\n"
+    "+alter table public.messages enable row level security;\n"
+)
 
 
 class FakeClient:
@@ -106,7 +115,7 @@ def good_trace(f: Finding) -> TraceOut:
             step("client:src/pages/Pets.tsx:9", "shop_window", "src/pages/Pets.tsx", 9),
             step("table:messages", "vault", MIGRATION, 37),
         ],
-        fix=FixOut(explanation="Turn on row level security.", diff="+alter table", prompt="Fix"),
+        fix=FixOut(explanation="Turn on row level security.", diff=GOOD_DIFF, prompt="Fix"),
     )
 
 
@@ -425,3 +434,137 @@ def test_redact_backstop_hides_key_like_literals_anywhere():
     out = redact_for_prompt("src/x.ts", text, [])
     assert jwt not in out and "sk-proj-abcdefghijklmnop1234" not in out
     assert "https://api.openai.com/v1/chat/completions" in out and "hello world" in out
+
+
+# --- fix round 1 ----------------------------------------------------------------------
+
+PROJ_KEY = "sk-proj-abcdefghijklmnop1234"
+
+
+def test_apostrophe_in_comment_cannot_hide_a_key():
+    text = f"// don't ship this\nconst k = '{PROJ_KEY}';\n"
+    out = redact_for_prompt("src/x.ts", text, [])
+    assert PROJ_KEY not in out
+    assert "// don't ship this" in out
+
+
+def test_apostrophe_in_jsx_text_cannot_hide_a_key():
+    text = f"<p>Don't have an account? {{'{PROJ_KEY}'}}</p>\n"
+    out = redact_for_prompt("src/Login.tsx", text, [])
+    assert PROJ_KEY not in out and "Don't have an account?" in out
+
+
+def test_flagged_line_with_unclosed_literal_hides_rest_of_line():
+    f = Finding(
+        id="m1-x",
+        mistake=1,
+        severity="critical",
+        status="confirmed",
+        title="t",
+        node_ids=[],
+        refs=[CodeRef(file="src/k.ts", start_line=1, end_line=2)],
+        source="gitleaks",
+    )
+    text = "const k = `abc-short-1\nsecondpart12345678xyz`\n"
+    out = redact_for_prompt("src/k.ts", text, [f])
+    assert "abc-short-1" not in out and "secondpart12345678xyz" not in out
+
+
+def _other_secret(rel: str, line: int) -> Finding:
+    return Finding(
+        id="m1-other",
+        mistake=1,
+        severity="critical",
+        status="confirmed",
+        title="t",
+        node_ids=[],
+        refs=[CodeRef(file=rel, start_line=line, end_line=line)],
+        source="gitleaks",
+    )
+
+
+def test_neighbour_file_flagged_by_another_finding_is_redacted(
+    vuln_findings, graph, ws, fake_client
+):
+    f = next(f for f in vuln_findings if f.id == "m3-adoption_requests")
+    other = _other_secret("src/pages/Requests.tsx", 16)
+    plain = build_user_prompt(f, graph, ws)
+    assert "16| " in plain and "'approved'" in plain
+    hidden = build_user_prompt(f, graph, ws, findings=[f, other])
+    assert "'approved'" not in hidden and "16|       body: { id, status: '<redacted>' }," in hidden
+    fake_client.queue(good_trace(f))
+    trace_with_validation(f, graph, ws, fake_client, findings=vuln_findings + [other])
+    assert "'approved'" not in fake_client.last_user
+
+
+def test_m1_prompt_includes_the_function_that_should_hold_the_key(vuln_findings, graph, ws):
+    m1 = next(f for f in vuln_findings if f.mistake == 1)
+    user = build_user_prompt(m1, graph, ws)
+    assert "=== supabase/functions/ai-describe/index.ts" in user
+    assert "=== supabase/functions/send-email/index.ts" not in user
+
+
+def test_m2_prompt_includes_edge_functions(vuln_findings, graph, ws):
+    m2 = next(f for f in vuln_findings if f.mistake == 2)
+    user = build_user_prompt(m2, graph, ws)
+    for name in ("ai-describe", "send-email", "update-request"):
+        assert f"=== supabase/functions/{name}/index.ts" in user
+
+
+INVENTED_DIFF = (
+    "--- a/supabase/functions/ai-describe/index.ts\n"
+    "+++ b/supabase/functions/ai-describe/index.ts\n"
+    "@@ -1,2 +1,3 @@\n"
+    ' import { serve } from "https://deno.land/std/http/server.ts";\n'
+    "+// check auth\n"
+    " serve(async (req) => {\n"
+)
+
+
+def test_invented_diff_is_swapped_for_template_without_retry(f_messages, graph, ws, fake_client):
+    t = good_trace(f_messages)
+    t.fix.diff = INVENTED_DIFF
+    cleaned, errors = validate_trace(t, f_messages, graph, ws)
+    assert len(errors) == 1 and "template diff" in errors[0]
+    assert cleaned.fix.diff == fallback_trace(f_messages, graph, ws).fix.diff
+    assert cleaned.fix.explanation == t.fix.explanation and cleaned.fix.prompt == t.fix.prompt
+    fake_client.queue(t)
+    out, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    assert how == "model" and fake_client.calls == 1
+    assert "enable row level security" in out.fix.diff
+
+
+def test_correct_diffs_are_kept(f_messages, graph, ws):
+    shifted = GOOD_DIFF.replace("@@ -40,2 +40,4 @@", "@@ -42,2 +42,4 @@").replace(
+        "   body text", " body   text"
+    )
+    new_file = "--- /dev/null\n+++ b/supabase/migrations/0004_x.sql\n@@ -0,0 +1,1 @@\n+select 1;\n"
+    env = "--- a/.env\n+++ b/.env\n@@ -4,1 +3,0 @@\n-VITE_OPENAI_API_KEY=<redacted>\n"
+    for diff in (GOOD_DIFF, shifted, new_file, env):
+        t = good_trace(f_messages)
+        t.fix.diff = diff
+        cleaned, errors = validate_trace(t, f_messages, graph, ws)
+        assert errors == [], diff
+        assert cleaned.fix.diff == diff
+
+
+def test_diff_problems_are_named():
+    from heist.validate import check_diff
+
+    ws = load_workspace(Path(__file__).parent / "fixtures" / "vuln_app")
+    assert check_diff("just words", ws) == ["fix diff is not a unified diff"]
+    unknown = "--- a/src/nope.ts\n+++ b/src/nope.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+    assert any("src/nope.ts" in p for p in check_diff(unknown, ws))
+    assert any("ai-describe" in p for p in check_diff(INVENTED_DIFF, ws))
+
+
+def test_usable_first_answer_kept_when_retry_raises(f_messages, graph, ws, fake_client):
+    fake_client.queue(bad_trace(f_messages), RuntimeError("boom"))
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    assert how == "model_retry" and fake_client.calls == 2
+    assert all(s.file != "src/nope.ts" for s in t.attack_path)
+    no_guard = good_trace(f_messages)
+    no_guard.attack_path = no_guard.attack_path[:2]
+    fake_client.queue(bad_trace(f_messages), no_guard)
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    assert how == "model_retry" and len(t.attack_path) == 3
