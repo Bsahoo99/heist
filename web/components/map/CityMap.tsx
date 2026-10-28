@@ -1,7 +1,24 @@
 import type { PathStep, Scene, Zone as ZoneId } from "@/lib/scene.gen";
-import { ZONES, ZONE_ORDER, VIEWBOX, isoToScreen, pathPoints, placeItems } from "./layout";
+import {
+  VIEWBOX,
+  ZONES,
+  ZONE_ORDER,
+  focusLabelIds,
+  focusViewBox,
+  insideView,
+  isoToScreen,
+  layoutLabels,
+  placeItems,
+  routePath,
+  zoneTitles,
+  type LabelBox,
+  type PlacedItem,
+  type Route,
+  type TitleBox,
+  type ViewBox,
+} from "./layout";
 import { Paths } from "./Paths";
-import { ItemLabel, MapItem, MapZone } from "./Zone";
+import { ItemLabel, MapItem, MapZone, ZoneTitle } from "./Zone";
 
 export type CityMapProps = {
   scene: Scene;
@@ -25,11 +42,19 @@ function summary(scene: Scene, flagged: number): string {
 }
 
 /** Faint tile grid under the whole block. */
+const GRID = (() => {
+  const xs = Object.values(ZONES).flatMap((z) => [z.origin[0], z.origin[0] + z.size[0]]);
+  const ys = Object.values(ZONES).flatMap((z) => [z.origin[1], z.origin[1] + z.size[1]]);
+  return {
+    minX: Math.floor(Math.min(...xs)) - 2,
+    maxX: Math.ceil(Math.max(...xs)) + 2,
+    minY: Math.floor(Math.min(...ys)) - 2,
+    maxY: Math.ceil(Math.max(...ys)) + 2,
+  };
+})();
+
 function GroundGrid() {
-  const minX = -1;
-  const maxX = 22;
-  const minY = -1;
-  const maxY = 20;
+  const { minX, maxX, minY, maxY } = GRID;
   const lines = [];
   for (let gx = minX; gx <= maxX; gx++) {
     const a = isoToScreen(gx, minY);
@@ -48,10 +73,102 @@ function GroundGrid() {
   );
 }
 
+type SvgProps = {
+  scene: Scene;
+  placed: PlacedItem[];
+  viewBox: ViewBox;
+  labels: LabelBox[];
+  titles: TitleBox[];
+  ghost?: Route;
+  attack?: Route;
+  progress: number;
+  highlight?: CityMapProps["highlight"];
+  idPrefix: string;
+  testIds: boolean;
+  ariaLabel: string;
+};
+
+function MapSvg({
+  scene,
+  placed,
+  viewBox: vb,
+  labels,
+  titles,
+  ghost,
+  attack,
+  progress,
+  highlight,
+  idPrefix,
+  testIds,
+  ariaLabel,
+}: SvgProps) {
+  const glowId = `${idPrefix}-glow`;
+  const clipId = `${idPrefix}-clip`;
+  const active = (id: ZoneId) => scene.zones.find((z) => z.id === id)?.active ?? false;
+  return (
+    <svg
+      role="img"
+      aria-label={ariaLabel}
+      viewBox={`${vb.x} ${vb.y} ${vb.width} ${vb.height}`}
+      preserveAspectRatio="xMidYMid meet"
+      className="citymap-svg"
+      fontFamily="var(--font-sans), system-ui, sans-serif"
+    >
+      <title>{`City map of ${scene.meta.repo}`}</title>
+      <defs>
+        <filter id={glowId} x="-60%" y="-60%" width="220%" height="220%">
+          <feDropShadow dx={0} dy={0} stdDeviation={3.5} style={{ floodColor: "var(--map-flag)" }} floodOpacity={0.75} />
+        </filter>
+        <clipPath id={clipId}>
+          <rect x={vb.x} y={vb.y} width={vb.width} height={vb.height} />
+        </clipPath>
+      </defs>
+      <g clipPath={`url(#${clipId})`}>
+        <GroundGrid />
+      </g>
+      {ZONE_ORDER.map((id) => {
+        const zone = scene.zones.find((z) => z.id === id) ?? { id, active: false, items: [] };
+        return (
+          <MapZone key={id} zone={zone} highlighted={highlight?.zone === id} testIds={testIds}>
+            {placed
+              .filter((p) => p.zone === id)
+              // Paint back to front: by depth, overflow extras first.
+              .map((p, i) => ({ p, i }))
+              .sort((a, b) => (a.p.y === b.p.y ? a.i - b.i : a.p.y - b.p.y))
+              .map(({ p }) => (
+                <MapItem
+                  key={p.item.node_id}
+                  p={p}
+                  glowId={glowId}
+                  testIds={testIds}
+                  highlighted={highlight?.nodeId === p.item.node_id}
+                />
+              ))}
+          </MapZone>
+        );
+      })}
+      <Paths ghost={ghost} attack={attack} progress={progress} testIds={testIds} />
+      <g data-testid={testIds ? "labels" : undefined}>
+        {titles.map((t) => (
+          <ZoneTitle key={t.zone} t={t} active={active(t.zone)} highlighted={highlight?.zone === t.zone} />
+        ))}
+        {labels.map((l) => (
+          <ItemLabel key={l.nodeId} l={l} testIds={testIds} />
+        ))}
+      </g>
+    </svg>
+  );
+}
+
 /**
  * The fixed isometric city block, filled in with one Scene's parts.
  * Rendering is a pure function of the props: the same Scene always gives the
  * same SVG.
+ *
+ * Wide containers show the whole block. Narrow ones (under 640 px, switched
+ * in CSS) show a second rendering framed on the finding's routes, labelling
+ * only the items on them and flagged items, with a "Show whole map" toggle
+ * that swaps in the full block in a sideways pan box.
  */
 export function CityMap({
   scene,
@@ -62,68 +179,41 @@ export function CityMap({
   className,
   idPrefix = "citymap",
 }: CityMapProps) {
-  // Fixed ids (not useId) so the same Scene always gives byte-identical SVG.
-  const glowId = `${idPrefix}-glow`;
-  const clipId = `${idPrefix}-clip`;
   const placed = placeItems(scene);
   const flaggedCount = placed.filter((p) => p.item.flagged).length;
-  const ghostPts = ghost ? pathPoints(ghost, scene) : undefined;
-  const attackPts = attack ? pathPoints(attack, scene) : undefined;
-  const vb = VIEWBOX;
+  const ghostRoute = ghost ? routePath(ghost, scene) : undefined;
+  const attackRoute = attack ? routePath(attack, scene) : undefined;
+  const ariaLabel = summary(scene, flaggedCount);
+  const focus = focusViewBox(scene, ghost, attack);
+  const common = { scene, placed, ghost: ghostRoute, attack: attackRoute, progress, highlight, ariaLabel };
 
   return (
     <div className={`citymap ${className ?? ""}`}>
-      <div className="citymap-pan">
-        <div className="citymap-center" aria-hidden="true" />
-        <svg
-          role="img"
-          aria-label={summary(scene, flaggedCount)}
-          viewBox={`${vb.x} ${vb.y} ${vb.width} ${vb.height}`}
-          preserveAspectRatio="xMidYMid meet"
-          className="citymap-svg"
-          fontFamily="var(--font-sans), system-ui, sans-serif"
-        >
-          <title>{`City map of ${scene.meta.repo}`}</title>
-          <defs>
-            <filter id={glowId} x="-60%" y="-60%" width="220%" height="220%">
-              <feDropShadow dx={0} dy={0} stdDeviation={3.5} style={{ floodColor: "var(--map-flag)" }} floodOpacity={0.75} />
-            </filter>
-            <clipPath id={clipId}>
-              <rect x={vb.x} y={vb.y} width={vb.width} height={vb.height} />
-            </clipPath>
-          </defs>
-          <g clipPath={`url(#${clipId})`}>
-            <GroundGrid />
-          </g>
-          {ZONE_ORDER.map((id) => {
-            const zone = scene.zones.find((z) => z.id === id) ?? { id, active: false, items: [] };
-            return (
-              <MapZone key={id} zone={zone} highlighted={highlight?.zone === id}>
-                {placed
-                  .filter((p) => p.zone === id)
-                  // Paint back to front: overflow extras first, then by depth.
-                  .map((p, i) => ({ p, i }))
-                  .sort((a, b) => b.p.y - a.p.y === 0 ? a.i - b.i : a.p.y - b.p.y)
-                  .map(({ p }) => (
-                    <MapItem
-                      key={p.item.node_id}
-                      p={p}
-                      glowId={glowId}
-                      highlighted={highlight?.nodeId === p.item.node_id}
-                    />
-                  ))}
-              </MapZone>
-            );
-          })}
-          <Paths ghost={ghostPts} attack={attackPts} progress={progress} />
-          <g data-testid="labels">
-            {placed
-              .filter((p) => !p.overflow)
-              .map((p) => (
-                <ItemLabel key={p.item.node_id} p={p} />
-              ))}
-          </g>
-        </svg>
+      <label className="citymap-toggle">
+        <input type="checkbox" className="citymap-toggle-input" />
+        Show whole map
+      </label>
+      <div className="citymap-focus">
+        <MapSvg
+          {...common}
+          viewBox={focus.viewBox}
+          labels={layoutLabels(placed, { only: focusLabelIds(scene, ghost, attack), scale: focus.labelScale }).filter(
+            (l) => insideView(focus.viewBox, l.rect),
+          )}
+          titles={zoneTitles(focus.labelScale).filter((t) => insideView(focus.viewBox, t.rect))}
+          idPrefix={`${idPrefix}-focus`}
+          testIds={false}
+        />
+      </div>
+      <div className="citymap-full">
+        <MapSvg
+          {...common}
+          viewBox={VIEWBOX}
+          labels={layoutLabels(placed)}
+          titles={zoneTitles()}
+          idPrefix={idPrefix}
+          testIds
+        />
       </div>
     </div>
   );

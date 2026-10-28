@@ -91,21 +91,80 @@ describe("CityMap items", () => {
 });
 
 describe("CityMap accessibility and determinism", () => {
-  test("svg has role img, a title and a summary label", () => {
+  test("each svg has role img, a title and a summary label", () => {
     render(<CityMap scene={fixtureScene({ warehouse: false, across_road: false })} />);
-    const svg = screen.getByRole("img");
-    expect(svg.querySelector(":scope > title")?.textContent).toBeTruthy();
-    const label = svg.getAttribute("aria-label") ?? "";
-    expect(label).toContain("Vault");
-    expect(label).not.toContain("Warehouse");
-    expect(label).toContain("1 flagged item");
+    const svgs = screen.getAllByRole("img");
+    expect(svgs).toHaveLength(2); // the full block and the narrow-screen framing
+    for (const svg of svgs) {
+      expect(svg.querySelector(":scope > title")?.textContent).toBeTruthy();
+      const label = svg.getAttribute("aria-label") ?? "";
+      expect(label).toContain("Vault");
+      expect(label).not.toContain("Warehouse");
+      expect(label).toContain("1 flagged item");
+    }
   });
 
   test("same scene renders the same svg", () => {
-    const a = render(<CityMap scene={vulnScene} />).container.innerHTML;
+    const finding = vulnScene.findings[0];
+    const el = <CityMap scene={vulnScene} ghost={finding.ghost_path} attack={finding.attack_path} progress={0.4} />;
+    const a = render(el).container.innerHTML;
     cleanup();
-    const b = render(<CityMap scene={vulnScene} />).container.innerHTML;
+    const b = render(el).container.innerHTML;
     expect(a).toBe(b);
+  });
+
+  test("zone titles paint above the paths", () => {
+    const finding = vulnScene.findings[0];
+    const { container } = render(
+      <CityMap scene={vulnScene} ghost={finding.ghost_path} attack={finding.attack_path} />,
+    );
+    const full = container.querySelector(".citymap-full svg")!;
+    const children = [...full.children];
+    const paths = children.findIndex((c) => c.getAttribute("data-testid") === "paths");
+    const labels = children.findIndex((c) => c.getAttribute("data-testid") === "labels");
+    expect(paths).toBeGreaterThan(-1);
+    expect(labels).toBeGreaterThan(paths);
+    expect(children[labels].querySelector('[data-zone-title="vault"]')?.textContent).toBe("Vault");
+  });
+});
+
+describe("CityMap narrow framing", () => {
+  test("the focus map labels only path and flagged items and has a whole-map toggle", () => {
+    const finding = vulnScene.findings.find((f) => f.id === "m1-vite-openai-api-key")!;
+    const { container } = render(
+      <CityMap scene={vulnScene} ghost={finding.ghost_path} attack={finding.attack_path} />,
+    );
+    const focus = container.querySelector(".citymap-focus svg")!;
+    const full = container.querySelector(".citymap-full svg")!;
+    expect(focus.getAttribute("viewBox")).not.toBe(full.getAttribute("viewBox"));
+    const focusLabels = [...focus.querySelectorAll("title")].slice(1).map((t) => t.textContent);
+    expect(focusLabels).toContain("Visitor");
+    expect(focusLabels).toContain("api.openai.com");
+    const allowed = new Set([
+      ...[...finding.ghost_path, ...finding.attack_path].map((st) => st.item_id),
+      ...vulnScene.zones.flatMap((z) => z.items.filter((i) => i.flagged).map((i) => i.node_id)),
+    ]);
+    const byLabel = new Map(vulnScene.zones.flatMap((z) => z.items.map((i) => [i.label, i.node_id])));
+    for (const l of focusLabels) expect(allowed.has(byLabel.get(l ?? "") ?? ""), l ?? "").toBe(true);
+    expect(focusLabels).not.toContain("Upload.tsx"); // neither on the path nor flagged
+    expect(screen.getByLabelText("Show whole map")).toBeTruthy();
+  });
+
+  test("the focus map drops labels and titles that would be clipped by its frame", () => {
+    const finding = vulnScene.findings.find((f) => f.id === "m5-send-email")!;
+    const { container } = render(
+      <CityMap scene={vulnScene} ghost={finding.ghost_path} attack={finding.attack_path} />,
+    );
+    const focus = container.querySelector(".citymap-focus svg")!;
+    const [x, y, w, h] = (focus.getAttribute("viewBox") ?? "").split(" ").map(Number);
+    for (const rect of focus.querySelectorAll("g > rect[rx]")) {
+      const rx = Number(rect.getAttribute("x"));
+      const ry = Number(rect.getAttribute("y"));
+      expect(rx).toBeGreaterThanOrEqual(x);
+      expect(ry).toBeGreaterThanOrEqual(y);
+      expect(rx + Number(rect.getAttribute("width"))).toBeLessThanOrEqual(x + w + 0.01);
+      expect(ry + Number(rect.getAttribute("height"))).toBeLessThanOrEqual(y + h + 0.01);
+    }
   });
 });
 
@@ -119,13 +178,23 @@ describe("CityMap paths", () => {
     step("vault", "table:table_1"),
   ];
 
-  test("draws ghost and attack lines through each item", () => {
+  test("draws ghost and attack routes with a stop on each item", () => {
     render(<CityMap scene={scene} ghost={ghost} attack={attack} />);
-    expect(points(screen.getByTestId("path-ghost"))).toHaveLength(3);
-    // The repeated last step stacks: 3 distinct points, no zero-length segment.
+    expect(screen.getAllByTestId("stop-ghost")).toHaveLength(3);
+    // The repeated last step stacks into one stop with a count of 2.
+    const stops = screen.getAllByTestId("stop-attack");
+    expect(stops).toHaveLength(3);
+    expect(stops[2].getAttribute("data-count")).toBe("2");
     const pts = points(screen.getByTestId("path-attack"));
-    expect(pts).toHaveLength(3);
-    expect(new Set(pts).size).toBe(pts.length);
+    for (let i = 1; i < pts.length; i++) expect(pts[i]).not.toBe(pts[i - 1]);
+  });
+
+  test("identical ghost and attack routes are drawn apart", () => {
+    render(<CityMap scene={scene} ghost={ghost} attack={ghost} />);
+    const g = points(screen.getByTestId("path-ghost"));
+    const a = points(screen.getByTestId("path-attack"));
+    expect(g).toHaveLength(a.length);
+    g.forEach((p, i) => expect(p).not.toBe(a[i]));
   });
 
   test("progress draws a partial attack line by length", () => {
@@ -135,10 +204,12 @@ describe("CityMap paths", () => {
     const drawn = Number(el.getAttribute("data-drawn-length"));
     expect(total).toBeGreaterThan(0);
     expect(drawn).toBeCloseTo(total / 2, 1);
+    expect(screen.getAllByTestId("stop-attack").length).toBeLessThan(3);
   });
 
   test("progress 0 draws no attack line", () => {
     render(<CityMap scene={scene} attack={attack} progress={0} />);
     expect(points(screen.getByTestId("path-attack"))).toHaveLength(0);
+    expect(screen.queryAllByTestId("stop-attack")).toHaveLength(0);
   });
 });

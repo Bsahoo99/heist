@@ -37,7 +37,7 @@ type SearchParams = Promise<{ [key: string]: string | string[] | undefined }>;
 export default function DevMapPage({ searchParams }: { searchParams: SearchParams }) {
   if (process.env.NODE_ENV === "production") notFound();
   return (
-    <Suspense fallback={<main className="h-dvh bg-[var(--map-bg)]" />}>
+    <Suspense fallback={<main className="min-h-dvh bg-[var(--map-bg)]" />}>
       <DevMap searchParams={searchParams} />
     </Suspense>
   );
@@ -53,8 +53,8 @@ async function DevMap({ searchParams }: { searchParams: SearchParams }) {
   const progress = Number.isFinite(progressParam) && one(params.progress) !== undefined ? progressParam : 1;
 
   return (
-    <main className="flex h-dvh flex-col bg-[var(--map-bg)] text-[var(--map-ink)]">
-      <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-[var(--map-slab-edge)] px-4 py-3 text-sm">
+    <main className="flex min-h-dvh flex-col bg-[var(--map-bg)] text-[var(--map-ink)] sm:h-dvh">
+      <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-[var(--map-slab-edge)] px-4 py-2.5 text-sm">
         <span className="rounded bg-[var(--map-badge-bg)] px-2 py-0.5 text-xs text-[var(--map-zone-ink)]">
           Dev preview
         </span>
@@ -74,7 +74,7 @@ async function DevMap({ searchParams }: { searchParams: SearchParams }) {
             </Link>
           ))}
         </nav>
-        <p className="order-last basis-full truncate text-[var(--map-zone-ink)] lg:order-none lg:basis-auto lg:min-w-0 lg:flex-1">
+        <p className="order-last basis-full text-[var(--map-zone-ink)] lg:order-none lg:basis-auto lg:min-w-0 lg:flex-1 lg:truncate">
           {finding ? finding.title : "No findings: every lock held"}
         </p>
         {finding && (
@@ -90,7 +90,8 @@ async function DevMap({ searchParams }: { searchParams: SearchParams }) {
           </ul>
         )}
       </header>
-      <div className="min-h-0 flex-1 p-4">
+      {/* Phones: the map takes its own height; wider screens: it fills the rest of the viewport. */}
+      <div className="p-4 sm:min-h-0 sm:flex-1 sm:p-3">
         <CityMap
           scene={scene}
           ghost={finding?.ghost_path}
