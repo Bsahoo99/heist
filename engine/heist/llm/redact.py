@@ -17,7 +17,6 @@ REDACTED = "<redacted>"
 QUOTES = "'\"`"
 
 SECRET_MIN_LEN = 20
-TOKENISH_MIN_LEN = 32
 # A path or URL segment of this length mixing letters and digits is treated as a key.
 SEGMENT_MIN_LEN = 16
 # On lines a mistake 1 or 2 finding points at, shorter mixed tokens are hidden too.
@@ -107,6 +106,37 @@ _CODE_WORDS = {
     "int",
     "bool",
 }
+# Words that make a whole line count as naming a secret. `key`/`keys` count when they end a
+# compound name (apiKey, STRIPE_SECRET_KEY, x-api-key); on their own only in a few shapes.
+_LINE_SECRET_WORDS = {
+    "secret",
+    "secrets",
+    "token",
+    "tokens",
+    "password",
+    "passwords",
+    "passwd",
+    "pwd",
+    "credential",
+    "credentials",
+    "authorization",
+    "apikey",
+    "bearer",
+}
+_LINE_SECRET_SUBSTR_RE = re.compile(r"secret|passw(?:or)?d|credential|token|apikey", re.IGNORECASE)
+_IDENT_RE = re.compile(r"[A-Za-z_$][\w$-]*")
+_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+_SQL_KEY_RE = re.compile(r"\b(?:primary|foreign|unique)\s+key\b", re.IGNORECASE)
+_ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+_NAME_LITERAL_RE = re.compile(r"[A-Za-z][\w.-]*")
+# A header value whose credential is a variable or already hidden: `Bearer ${apiKey}`.
+_SAFE_AUTH_LITERAL_RE = re.compile(
+    r"(?:Authorization:\s*)?(?:Bearer|Basic)\s+"
+    r"(?:\$\{[\w$.]+(?:\(['\"][A-Z][A-Z0-9_]*['\"]\))?\}|<redacted>)",
+    re.IGNORECASE,
+)
+_AUTH_SCHEME_RE = re.compile(r"\b(Bearer|Basic)([ \t]+)(?!\$\{)[^\s'\"`<>]+")
+_DOCKER_ARG_RE = re.compile(r"^(\s*(?:ENV|ARG)\s+)(.*)$", re.IGNORECASE)
 _SECTION_RE = re.compile(r"\s*(?:\[\[?[^\]=]*\]\]?|---|\.\.\.)\s*")
 _CONTINUES_AFTER = ("+", ",", "(", "[", "{", "=", ":", "|", "&", "?", "\\", "-", "*", "/", "%")
 _CONTINUES_BEFORE = ("+", ".", "?", ":", "&&", "||", "-", "*", "/")
@@ -174,7 +204,13 @@ def _token_hit(token: str, min_len: int | None) -> bool:
         return any(_secret_part(p) for p in segments) or (
             len(token) >= SECRET_MIN_LEN and _mixed(token)
         )
-    return len(token) >= TOKENISH_MIN_LEN and _mixed(token)
+    # 20+ characters mixing letters and digits, unless shaped like a word or a dotted name.
+    return (
+        len(token) >= SECRET_MIN_LEN
+        and _mixed(token)
+        and not _path_segment(token)
+        and not _DOTTED_IDENT_RE.fullmatch(token)
+    )
 
 
 def _redact_tokens(line: str, min_len: int | None = None) -> str:
@@ -228,8 +264,13 @@ def _redact_url(m: re.Match[str]) -> str:
     return out
 
 
+def _redact_auth_schemes(line: str) -> str:
+    """The credential after `Bearer` or `Basic`, in any file."""
+    return _AUTH_SCHEME_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", line)
+
+
 def _redact_urls(line: str) -> str:
-    return _URL_RE.sub(_redact_url, _redact_userinfo(line))
+    return _redact_auth_schemes(_URL_RE.sub(_redact_url, _redact_userinfo(line)))
 
 
 # --- literals and named values ----------------------------------------------------------
@@ -248,11 +289,14 @@ def _close_of(line: str, start: int, quote: str) -> int:
     return -1
 
 
-def _redact_literals(line: str, open_quote: str | None = None) -> tuple[str, str | None]:
+def _redact_literals(
+    line: str, open_quote: str | None = None, keep_names: bool = False
+) -> tuple[str, str | None]:
     """Replace the contents of every string literal on one line.
 
     `open_quote` is a literal left open by an earlier line. Returns the line and the quote of
     a literal still open at its end (a multi-line template literal, or an apostrophe in prose).
+    With `keep_names`, literals that are only a name (see `_name_literal`) stay visible.
     """
     out: list[str] = []
     i = 0
@@ -272,9 +316,73 @@ def _redact_literals(line: str, open_quote: str | None = None) -> tuple[str, str
         if j == -1:
             out.append(f"{c}{REDACTED}")
             return "".join(out), c
-        out.append(f"{c}{REDACTED}{c}" if j > i + 1 else c + c)
+        content = line[i + 1 : j]
+        if not content or (keep_names and _name_literal(content)):
+            out.append(f"{c}{content}{c}")
+        else:
+            out.append(f"{c}{REDACTED}{c}")
         i = j + 1
     return "".join(out), None
+
+
+def _names_secret(ident: str) -> bool:
+    """A compound name that says it holds a secret: apiKey, stripe_secret, Authorization."""
+    if PUBLIC_NAME_RE.search(ident):
+        return False
+    words = [w.lower() for w in _WORD_RE.findall(ident)]
+    if not words:
+        return False
+    if any(w in _LINE_SECRET_WORDS for w in words) or _LINE_SECRET_SUBSTR_RE.search(ident):
+        return True
+    return len(words) > 1 and words[-1] in ("key", "keys")
+
+
+def _name_literal(content: str) -> bool:
+    """A literal that is just a name, kept readable on lines that name a secret.
+
+    Env var names (STRIPE_KEY, OPENAI_API_KEY), secret-like names (Authorization, x-api-key,
+    stripe_key) and `Bearer ${variable}`. Never anything that looks like a key itself.
+    """
+    if _SAFE_AUTH_LITERAL_RE.fullmatch(content):
+        return True
+    if _token_hit(content, FLAGGED_TOKEN_MIN_LEN):
+        return False
+    if _ENV_NAME_RE.fullmatch(content):
+        return True
+    return (
+        len(content) <= 40
+        and _NAME_LITERAL_RE.fullmatch(content) is not None
+        and not any(ch.isdigit() for ch in content)
+        and _names_secret(content)
+    )
+
+
+def _line_names_secret(line: str) -> bool:
+    """The line names a secret anywhere: as an identifier, in a string, or in a comment."""
+    line = _SQL_KEY_RE.sub(" ", line)
+    for m in _IDENT_RE.finditer(line):
+        if m.group(0).lower() in ("key", "keys"):
+            if _bare_key_names_secret(line, m):
+                return True
+        elif _names_secret(m.group(0)):
+            return True
+    return False
+
+
+def _bare_key_names_secret(line: str, m: re.Match[str]) -> bool:
+    """A lone `key`: assigned (`key = `, `key:`), quoted ("keys"), or a <key> tag.
+
+    Not a JSX `key={...}` prop, a `.keys()` call or a `keyof` type.
+    """
+    before = line[: m.start()].rstrip()[-1:]
+    after = line[m.end() :].lstrip()
+    if before in ("'", '"', "`", "<") or after[:1] in ("'", '"', "`", ">"):
+        return True
+    if before == ".":
+        return False
+    return (after.startswith(":") and not after.startswith("::")) or (
+        after.startswith("=") and not after.startswith(("==", "={", "=>"))
+    )
 
 
 def _public_value(name: str, value: str) -> bool:
@@ -310,7 +418,8 @@ def _redact_named(line: str, code: bool) -> tuple[str, str | None]:
                 out.append(f"{c}{REDACTED}")
                 return "".join(out), c
             value = line[end + 1 : j]
-            if value and not _public_value(m.group("name"), value):
+            safe = _public_value(m.group("name"), value) or _SAFE_AUTH_LITERAL_RE.fullmatch(value)
+            if value and not safe:
                 value = REDACTED
             out.append(f"{c}{value}{c}")
             i = j + 1
@@ -319,6 +428,8 @@ def _redact_named(line: str, code: bool) -> tuple[str, str | None]:
         if bare is None:
             continue
         value = bare.group(0)
+        if value in ("Bearer", "Basic"):
+            continue  # the credential after it is hidden by _redact_auth_schemes
         if _public_value(m.group("name"), value) or (code and _code_value(value)):
             continue
         out.append(REDACTED)
@@ -360,29 +471,61 @@ def _flagged_lines(rel: str, findings: list[Finding]) -> set[int]:
     return flagged
 
 
-def _continues(out_line: str, next_line: str | None) -> bool:
+def _continues(out_line: str, next_line: str | None, strict: bool) -> bool:
+    """The statement goes on to the next line. A line that only names a secret (not strict)
+    does not continue past a trailing comma: its value is complete on that line.
+    """
     if next_line is None:
         return False
-    return out_line.rstrip().endswith(_CONTINUES_AFTER) or next_line.lstrip().startswith(
-        _CONTINUES_BEFORE
-    )
+    after = _CONTINUES_AFTER if strict else tuple(t for t in _CONTINUES_AFTER if t != ",")
+    return out_line.rstrip().endswith(after) or next_line.lstrip().startswith(_CONTINUES_BEFORE)
+
+
+def _is_dockerfile(rel: str) -> bool:
+    name = rel.rsplit("/", 1)[-1].lower()
+    return name == "dockerfile" or name.startswith("dockerfile.") or name.endswith(".dockerfile")
+
+
+def _redact_docker_line(line: str) -> str:
+    """`ENV name value`, `ENV a=b c=d` and `ARG name=value` are assignments: hide the values."""
+    m = _DOCKER_ARG_RE.match(line)
+    if m is None or not m.group(2).strip():
+        return line
+    head, rest = m.group(1), m.group(2)
+    first = rest.split(None, 1)[0]
+    if "=" in first:
+        return head + re.sub(r"=(\"[^\"]*\"|'[^']*'|\S+)", f"={REDACTED}", rest)
+    parts = rest.split(None, 1)
+    return head + parts[0] + (f" {REDACTED}" if len(parts) > 1 else "")
 
 
 def _redact_source(rel: str, text: str, findings: list[Finding]) -> list[str]:
+    """Code and prose. Lines a mistake 1 or 2 finding points at are hidden strictly; lines that
+    name a secret anywhere are hidden too, but keep literals that are only names (STRIPE_KEY,
+    'Authorization') readable. Both widen to the multi-line string or statement they open.
+    """
     flagged = _flagged_lines(rel, findings)
     code = _is_code_file(rel)
+    docker = _is_dockerfile(rel)
     lines = text.splitlines()
     out: list[str] = []
     open_quote: str | None = None
     budget = 0  # lines left that a flagged line may still widen into
     hide_next = False
+    strict = False  # the current widening started at a finding's line
     for n, line in enumerate(lines, start=1):
-        if n in flagged:
+        if docker:
+            line = _redact_docker_line(line)
+        names = _line_names_secret(line)
+        if n in flagged or names:
             budget = WIDEN_MAX_LINES
-        hidden = n in flagged or hide_next or open_quote is not None
+            strict = n in flagged or (strict and hide_next)
+        elif not hide_next and open_quote is None:
+            strict = False
+        hidden = n in flagged or names or hide_next or open_quote is not None
         line = _redact_urls(line)
         if hidden:
-            line, open_quote = _redact_literals(line, open_quote)
+            line, open_quote = _redact_literals(line, open_quote, keep_names=not strict)
             line, _ = _redact_named(line, code)
             line = _redact_tokens(line, FLAGGED_TOKEN_MIN_LEN)
         else:
@@ -392,7 +535,7 @@ def _redact_source(rel: str, text: str, findings: list[Finding]) -> list[str]:
                 budget = WIDEN_MAX_LINES
         out.append(line)
         nxt = lines[n] if n < len(lines) else None
-        wants_more = open_quote is not None or (hidden and _continues(line, nxt))
+        wants_more = open_quote is not None or (hidden and _continues(line, nxt, strict))
         hide_next = wants_more and budget > 0
         budget = budget - 1 if hide_next else 0
         if not hide_next:
@@ -405,10 +548,10 @@ def redact_for_prompt(rel: str, text: str, findings: list[Finding]) -> str:
 
     Env and config files (.env*, .dev.vars, *.toml, *.yaml, secrets.*, ...) keep their names
     but lose every value, comments included; only bare true/false survive. In every other file:
-    passwords in URLs, values assigned to secret-looking names, JWTs, prefixed keys, and long or
-    letter-digit tokens that are not paths are hidden. On lines that a mistake 1 or 2 finding
-    points at, widened to the multi-line string or statement they open, every string literal
-    is hidden too.
+    passwords in URLs, credentials after Bearer/Basic, values assigned to secret-looking names,
+    JWTs, prefixed keys, and long or letter-digit tokens that are not paths are hidden. On lines
+    that a mistake 1 or 2 finding points at, and on lines that name a secret anywhere, widened to
+    the multi-line string or statement they open, string literals are hidden too.
     """
     if is_assignment_file(rel):
         out = _redact_assignments(text)
