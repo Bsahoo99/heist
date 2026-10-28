@@ -9,7 +9,9 @@
     "lint": "eslint",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
-    "gen:scene": "json2ts ../shared/scene.schema.json -o lib/scene.gen.ts"
+    "gen:scene": "json2ts ../shared/scene.schema.json -o lib/scene.gen.ts",
+    "gen:art": "node scripts/gen-art-manifest.mjs",
+    "prebuild": "node scripts/gen-art-manifest.mjs"
   },
   "dependencies": {
     "motion": "^14.6.0",

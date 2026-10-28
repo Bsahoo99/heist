@@ -24,3 +24,104 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* City map: a calm night palette. One red accent marks flagged items and the
+   attack path; cyan is reserved for the ghost (legitimate) path. */
+:root {
+  --map-bg: #0d1626;
+  --map-grid: rgba(120, 150, 190, 0.07);
+  --map-slab-top: #1a273b;
+  --map-slab-left: #131e2f;
+  --map-slab-right: #0f1827;
+  --map-slab-edge: #2a3a54;
+  --map-wall: rgba(36, 52, 78, 0.7);
+  --map-road: #121a27;
+  --map-road-left: #0e1520;
+  --map-road-right: #0b111b;
+  --map-lane: #3b4a60;
+  --map-item-top: #3d5170;
+  --map-item-left: #2c3c57;
+  --map-item-right: #22304a;
+  --map-dark-top: #283850;
+  --map-dark-left: #1c2a42;
+  --map-dark-right: #152035;
+  --map-edge: #536a8b;
+  --map-door: #0e1829;
+  --map-glass: #1d3a50;
+  --map-glass-line: #5a92b3;
+  --map-person: #cbd6e4;
+  --map-shadow: rgba(0, 0, 0, 0.35);
+  --map-lamp: #f2c46d;
+  --map-ink: #d8e1ec;
+  --map-zone-ink: #a3b3ca;
+  --map-muted: #8796ad;
+  --map-label-bg: rgba(9, 15, 27, 0.9);
+  --map-label-edge: #2e405c;
+  --map-badge-bg: #2e405c;
+  --map-flag: #ff4d5e;
+  --map-flag-soft: rgba(255, 77, 94, 0.28);
+  --map-flag-ink: #ffd6da;
+  --map-ghost: #5ce1e6;
+}
+
+.citymap {
+  container-type: inline-size;
+  width: 100%;
+  height: 100%;
+}
+
+.citymap-pan {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.citymap-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.citymap-label {
+  transform-box: fill-box;
+  transform-origin: 50% 0;
+}
+
+/* Opens a narrow pan region centred on the block. */
+.citymap-center {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 1px;
+  height: 1px;
+  scroll-initial-target: nearest;
+}
+
+/* Fitting the whole block into a phone's width would shrink item labels to
+   about 4px. Below 640px the map keeps a readable minimum width and pans
+   sideways inside its own box instead, opening centred on the block. */
+@container (max-width: 640px) {
+  .citymap-pan {
+    height: auto;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+  .citymap-svg {
+    width: 720px;
+    max-width: none;
+    height: auto;
+  }
+  /* As wide as the visible box and centred on the map, so scrolling it into
+     view centres the block. */
+  .citymap-center {
+    left: calc(360px - 50cqw);
+    width: 100cqw;
+  }
+  .citymap-label {
+    scale: 1.3;
+  }
+  .citymap-zone-label {
+    font-size: 18px;
+  }
+}
