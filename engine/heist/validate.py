@@ -11,7 +11,6 @@ __all__ = ["Report", "check_diff", "check_trace", "scrub_dashes", "validate_trac
 
 GHOST_STEPS = (2, 5)
 ATTACK_STEPS = (3, 7)
-DIFF_LINE_SLACK = 3
 REDACTED = "<redacted>"
 DIFF_SWAPPED = "fix diff does not match the repo, so the template diff is used instead"
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -59,29 +58,125 @@ def _diff_path(header: str) -> str:
     return path
 
 
+def _unsafe_path(path: str) -> bool:
+    return path.startswith(("/", "~", "\\")) or ".." in re.split(r"[/\\]", path)
+
+
 def _same(model_line: str, real: str) -> bool:
-    """Equal up to whitespace. A <redacted> placeholder stands for any text."""
-    a, b = "".join(model_line.split()), "".join(real.split())
+    """Equal after strip(). A <redacted> placeholder stands for any text."""
+    a, b = model_line.strip(), real.strip()
     if REDACTED not in a:
         return a == b
     parts = [re.escape(p) for p in a.split(REDACTED)]
     return re.fullmatch(".*".join(parts), b) is not None
 
 
-def _hunk_fits(old: list[str], start: int, real: list[str]) -> bool:
+def _anchored(old: list[str]) -> bool:
+    """At least one line that pins the hunk down: real text besides any placeholder."""
+    return any(x.replace(REDACTED, "").strip() for x in old)
+
+
+def _hunk_at(
+    old: list[str], start: int, real: list[str], at_start: bool = False, at_end: bool = False
+) -> int | None:
+    """Where the hunk's old block sits in the file, preferring the match nearest its header.
+
+    `at_start` and `at_end` pin the block to the start or end of the file, as git apply does.
+    """
     if not old:
-        return 0 <= start <= len(real)
-    for shift in range(-DIFF_LINE_SLACK, DIFF_LINE_SLACK + 1):
-        at = max(start, 1) - 1 + shift
-        if at < 0 or at + len(old) > len(real):
-            continue
-        if all(_same(x, real[at + i]) for i, x in enumerate(old)):
-            return True
-    return False
+        return start if 0 <= start <= len(real) else None
+    want = max(start, 1) - 1
+    last = len(real) - len(old)
+    spots = [
+        at
+        for at in range(last + 1)
+        if (not at_start or at == 0)
+        and (not at_end or at == last)
+        and all(_same(x, real[at + i]) for i, x in enumerate(old))
+    ]
+    return min(spots, key=lambda at: abs(at - want)) if spots else None
 
 
 def _is_header(rows: list[str], i: int) -> bool:
     return rows[i].startswith("--- ") and i + 1 < len(rows) and rows[i + 1].startswith("+++ ")
+
+
+@dataclass
+class _Hunk:
+    start: int
+    old: list[str]
+    added: list[str]
+    complete: bool
+    context: int
+    # Context lines after the last change.
+    trailing: int
+
+
+def _read_hunk(rows: list[str], i: int, m: re.Match[str]) -> tuple[_Hunk, int]:
+    """The hunk whose header matched at rows[i], read by its line counts, and the next row."""
+    old_left = int(m.group(2) or 1)
+    new_left = int(m.group(4) or 1)
+    i += 1
+    old: list[str] = []
+    added: list[str] = []
+    context = 0
+    trailing = 0
+    while i < len(rows) and (old_left > 0 or new_left > 0):
+        row = rows[i]
+        if row.startswith("@@") or _is_header(rows, i):
+            break
+        if row.startswith("\\"):
+            i += 1
+            continue
+        if row.startswith("+"):
+            added.append(row[1:])
+            new_left -= 1
+            trailing = 0
+        elif row.startswith("-"):
+            old.append(row[1:])
+            old_left -= 1
+            trailing = 0
+        elif row.startswith(" ") or row == "":
+            old.append(row[1:])
+            context += 1
+            trailing += 1
+            old_left -= 1
+            new_left -= 1
+        else:
+            break
+        i += 1
+    while i < len(rows) and rows[i].startswith("\\"):
+        i += 1
+    complete = old_left == 0 and new_left == 0
+    return _Hunk(int(m.group(1)), old, added, complete, context, trailing), i
+
+
+def _check_hunk(h: _Hunk, old_path: str, new_path: str, real: list[str] | None) -> list[str]:
+    """Problems with one hunk. `real` is None when the file it changes is not checkable."""
+    where = f"diff hunk at '{old_path if old_path != '/dev/null' else new_path}' line {h.start}"
+    problems: list[str] = []
+    if not h.complete:
+        problems.append(f"{where} has a different number of lines than its @@ header says")
+    if any(REDACTED in x for x in h.added):
+        problems.append(f"{where} adds a line with the {REDACTED} placeholder")
+    if old_path == "/dev/null":
+        if h.old:
+            problems.append(f"diff for new file '{new_path}' has removed or context lines")
+        return problems
+    if real is None:
+        return problems
+    # Like git apply: a hunk with context that starts at line 1 must match the start of the
+    # file, and one with no context after its last change must match the end. A hunk with
+    # no context at all is read as git apply --unidiff-zero reads it.
+    at_start = h.start == 0 or (h.context > 0 and h.start == 1)
+    at_end = h.context > 0 and h.trailing == 0
+    if h.old and not _anchored(h.old):
+        problems.append(f"{where} has no real line to anchor it, only blanks or placeholders")
+    elif _hunk_at(h.old, h.start, real, at_start, at_end) is None:
+        problems.append(f"{where} does not match the file")
+    elif new_path == "/dev/null" and (len(h.old) != len(real) or h.added or h.context):
+        problems.append(f"{where} deletes the file but does not remove all of it")
+    return problems
 
 
 def _check_diff(diff: str, lines: _Lines) -> list[str]:
@@ -97,11 +192,19 @@ def _check_diff(diff: str, lines: _Lines) -> list[str]:
         files += 1
         i += 2
         new_file = old_path == "/dev/null"
+        for path in (old_path, new_path):
+            if path != "/dev/null" and _unsafe_path(path):
+                problems.append(f"diff path '{path}' leaves the repo")
+        if new_file and new_path == "/dev/null":
+            problems.append("diff has /dev/null on both sides")
+        elif new_file and lines.has(new_path):
+            problems.append(f"diff creates '{new_path}', which already exists")
         if not new_file and not lines.has(old_path):
             problems.append(f"diff changes '{old_path}', which is not in the repo")
         if new_path != "/dev/null" and not new_file and new_path != old_path:
             problems.append(f"diff renames '{old_path}' to '{new_path}'")
-        real = [] if new_file or not lines.has(old_path) else lines.text(old_path)
+        real = lines.text(old_path) if not new_file and lines.has(old_path) else None
+        hunks = 0
         while i < len(rows) and not _is_header(rows, i):
             m = _HUNK_RE.match(rows[i])
             if not m:
@@ -109,28 +212,11 @@ def _check_diff(diff: str, lines: _Lines) -> list[str]:
                     problems.append(f"diff for '{old_path}' has lines outside any hunk")
                 i += 1
                 continue
-            start = int(m.group(1))
-            old_left = int(m.group(2) or 1)
-            new_left = int(m.group(4) or 1)
-            i += 1
-            old: list[str] = []
-            while i < len(rows) and (old_left > 0 or new_left > 0):
-                row = rows[i]
-                if row.startswith("@@") or _is_header(rows, i):
-                    break
-                if row.startswith("+"):
-                    new_left -= 1
-                elif row.startswith(("-", " ")) or row == "":
-                    old.append(row[1:])
-                    old_left -= 1
-                    if not row.startswith("-"):
-                        new_left -= 1
-                i += 1
-            if new_file:
-                if old:
-                    problems.append(f"diff for new file '{new_path}' has removed or context lines")
-            elif lines.has(old_path) and not _hunk_fits(old, start, real):
-                problems.append(f"diff hunk at '{old_path}' line {start} does not match the file")
+            hunks += 1
+            hunk, i = _read_hunk(rows, i, m)
+            problems += _check_hunk(hunk, old_path, new_path, real)
+        if hunks == 0:
+            problems.append(f"diff for '{old_path}' has no hunks")
     if files == 0:
         problems.append("fix diff is not a unified diff")
     return problems

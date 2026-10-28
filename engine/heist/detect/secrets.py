@@ -83,7 +83,7 @@ def _jwt_role(value: str) -> str | None:
     return role if isinstance(role, str) else None
 
 
-def _is_public_by_design(value: str) -> bool:
+def is_public_by_design(value: str) -> bool:
     if value.startswith(PUBLIC_VALUE_PREFIXES):
         return True
     if re.match(r"^https?://\S+$", value, re.IGNORECASE):
@@ -160,7 +160,7 @@ def _env_findings(
                 flagged.add((rel, line_no))
                 continue
             if (
-                _is_public_by_design(value)
+                is_public_by_design(value)
                 or name.upper().endswith("_URL")
                 or PUBLIC_NAME_RE.search(name)
             ):
@@ -294,7 +294,7 @@ def _gitleaks_findings(
             continue
         if not _in_frontend_scope(ws, rel, scope) or (rel, line_no) in flagged:
             continue
-        if _is_public_by_design(secret) or _public_name_on_line(ws, rel, line_no):
+        if is_public_by_design(secret) or _public_name_on_line(ws, rel, line_no):
             continue
         findings.append(
             Finding(

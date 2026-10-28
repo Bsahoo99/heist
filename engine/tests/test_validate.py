@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -18,7 +20,7 @@ from heist.llm.trace import (
     trace_with_validation,
 )
 from heist.models import AppGraph, CodeRef, Finding, FixOut, StepOut, TraceOut
-from heist.validate import validate_trace
+from heist.validate import _hunk_at, check_diff, validate_trace
 from tests.helpers import all_findings
 
 T = TypeVar("T", bound=BaseModel)
@@ -154,7 +156,7 @@ def test_attack_path_must_reach_the_missing_guard(f_messages, graph, ws):
 
 def test_retry_once_with_feedback_then_fallback(f_messages, graph, ws, fake_client):
     fake_client.queue(ModelOutputError("x", "bad"), ModelOutputError("x", "bad"))
-    t, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "fallback" and fake_client.calls == 2
     assert t.attack_path and t.fix.prompt
     assert fake_client.last_feedback is not None and "bad" in fake_client.last_feedback
@@ -162,7 +164,7 @@ def test_retry_once_with_feedback_then_fallback(f_messages, graph, ws, fake_clie
 
 def test_retry_succeeds(f_messages, graph, ws, fake_client):
     fake_client.queue(bad_trace(f_messages), good_trace(f_messages))
-    _, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    _, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "model_retry"
     assert fake_client.last_feedback is not None
     assert "src/nope.ts" in fake_client.last_feedback
@@ -180,14 +182,14 @@ def test_fallback_exists_for_every_mistake(vuln_findings, graph, ws):
 
 def test_first_try_clean_is_model(f_messages, graph, ws, fake_client):
     fake_client.queue(good_trace(f_messages))
-    _, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    _, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "model" and fake_client.calls == 1
     assert fake_client.last_which == "spark" and fake_client.last_max_tokens == TRACE_MAX_TOKENS
 
 
 def test_retry_keeps_cleaned_trace_when_only_steps_dropped(f_messages, graph, ws, fake_client):
     fake_client.queue(bad_trace(f_messages), bad_trace(f_messages))
-    t, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "model_retry"
     assert all(s.file != "src/nope.ts" for s in t.attack_path)
 
@@ -196,17 +198,17 @@ def test_retry_with_fatal_errors_falls_back(f_messages, graph, ws, fake_client):
     no_guard = good_trace(f_messages)
     no_guard.attack_path = no_guard.attack_path[:2]
     fake_client.queue(no_guard, no_guard)
-    _, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    _, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "fallback" and fake_client.calls == 2
     assert fake_client.last_feedback is not None and "guard" in fake_client.last_feedback
 
 
 def test_any_client_exception_is_caught(f_messages, graph, ws, fake_client):
     fake_client.queue(RuntimeError("boom"), good_trace(f_messages))
-    _, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    _, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "model_retry"
     fake_client.queue(RuntimeError("boom"), RuntimeError("boom"))
-    _, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    _, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "fallback"
 
 
@@ -250,7 +252,7 @@ def test_em_dashes_are_replaced(f_messages, graph, ws, fake_client):
     assert cleaned.attack_path[0].story == "in - out"
     assert cleaned.fix.prompt == "please - now"
     fake_client.queue(t)
-    out = trace_finding(f_messages, graph, ws, fake_client)
+    out = trace_finding(f_messages, graph, ws, fake_client, findings=[f_messages])
     dumped = out.model_dump_json()
     assert EM_DASH not in dumped and "\\u2014" not in dumped
 
@@ -260,7 +262,7 @@ def test_em_dashes_are_replaced(f_messages, graph, ws, fake_client):
 
 def test_user_prompt_has_graph_finding_and_numbered_files(f_messages, graph, ws, fake_client):
     fake_client.queue(good_trace(f_messages))
-    trace_finding(f_messages, graph, ws, fake_client)
+    trace_finding(f_messages, graph, ws, fake_client, findings=[f_messages])
     user = fake_client.last_user
     assert (
         "table:messages | table | messages | vault | supabase/migrations/0001_init.sql:37" in user
@@ -275,14 +277,14 @@ def test_user_prompt_has_graph_finding_and_numbered_files(f_messages, graph, ws,
 
 def test_user_prompt_includes_neighbour_files(vuln_findings, graph, ws):
     f = next(f for f in vuln_findings if f.id == "m3-adoption_requests")
-    user = build_user_prompt(f, graph, ws)
+    user = build_user_prompt(f, graph, ws, findings=[f])
     assert "=== src/pages/Requests.tsx" in user
     assert "=== supabase/functions/update-request/index.ts" in user
 
 
 def test_user_prompt_respects_cap(vuln_findings, graph, ws):
     f = next(f for f in vuln_findings if f.id == "m3-adoption_requests")
-    user = build_user_prompt(f, graph, ws, cap=1500)
+    user = build_user_prompt(f, graph, ws, findings=[f], cap=1500)
     assert "=== supabase/migrations/0001_init.sql" in user
     assert "=== src/pages/Requests.tsx" not in user
 
@@ -331,13 +333,13 @@ def test_redact_literals_on_flagged_source_lines():
 def test_secrets_never_reach_the_prompt(vuln_findings, graph, ws, fake_client):
     for f in vuln_findings:
         fake_client.queue(good_trace(f))
-        trace_finding(f, graph, ws, fake_client, feedback="retry please")
+        trace_finding(f, graph, ws, fake_client, feedback="retry please", findings=vuln_findings)
         for text in (fake_client.last_user, fake_client.last_system):
             assert FAKE_OPENAI_KEY not in text, f.id
             assert ANON_JWT_SIGNATURE not in text, f.id
             assert "sk-h" not in text, f.id
     m1 = next(f for f in vuln_findings if f.mistake == 1)
-    user = build_user_prompt(m1, graph, ws)
+    user = build_user_prompt(m1, graph, ws, findings=[m1])
     assert "4| VITE_OPENAI_API_KEY=<redacted>" in user
 
 
@@ -488,7 +490,7 @@ def test_neighbour_file_flagged_by_another_finding_is_redacted(
 ):
     f = next(f for f in vuln_findings if f.id == "m3-adoption_requests")
     other = _other_secret("src/pages/Requests.tsx", 16)
-    plain = build_user_prompt(f, graph, ws)
+    plain = build_user_prompt(f, graph, ws, findings=[f])
     assert "16| " in plain and "'approved'" in plain
     hidden = build_user_prompt(f, graph, ws, findings=[f, other])
     assert "'approved'" not in hidden and "16|       body: { id, status: '<redacted>' }," in hidden
@@ -499,14 +501,14 @@ def test_neighbour_file_flagged_by_another_finding_is_redacted(
 
 def test_m1_prompt_includes_the_function_that_should_hold_the_key(vuln_findings, graph, ws):
     m1 = next(f for f in vuln_findings if f.mistake == 1)
-    user = build_user_prompt(m1, graph, ws)
+    user = build_user_prompt(m1, graph, ws, findings=[m1])
     assert "=== supabase/functions/ai-describe/index.ts" in user
     assert "=== supabase/functions/send-email/index.ts" not in user
 
 
 def test_m2_prompt_includes_edge_functions(vuln_findings, graph, ws):
     m2 = next(f for f in vuln_findings if f.mistake == 2)
-    user = build_user_prompt(m2, graph, ws)
+    user = build_user_prompt(m2, graph, ws, findings=[m2])
     for name in ("ai-describe", "send-email", "update-request"):
         assert f"=== supabase/functions/{name}/index.ts" in user
 
@@ -529,14 +531,14 @@ def test_invented_diff_is_swapped_for_template_without_retry(f_messages, graph, 
     assert cleaned.fix.diff == fallback_trace(f_messages, graph, ws).fix.diff
     assert cleaned.fix.explanation == t.fix.explanation and cleaned.fix.prompt == t.fix.prompt
     fake_client.queue(t)
-    out, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    out, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "model" and fake_client.calls == 1
     assert "enable row level security" in out.fix.diff
 
 
 def test_correct_diffs_are_kept(f_messages, graph, ws):
     shifted = GOOD_DIFF.replace("@@ -40,2 +40,4 @@", "@@ -42,2 +42,4 @@").replace(
-        "   body text", " body   text"
+        "   body text", " body text"
     )
     new_file = "--- /dev/null\n+++ b/supabase/migrations/0004_x.sql\n@@ -0,0 +1,1 @@\n+select 1;\n"
     env = "--- a/.env\n+++ b/.env\n@@ -4,1 +3,0 @@\n-VITE_OPENAI_API_KEY=<redacted>\n"
@@ -549,8 +551,6 @@ def test_correct_diffs_are_kept(f_messages, graph, ws):
 
 
 def test_diff_problems_are_named():
-    from heist.validate import check_diff
-
     ws = load_workspace(Path(__file__).parent / "fixtures" / "vuln_app")
     assert check_diff("just words", ws) == ["fix diff is not a unified diff"]
     unknown = "--- a/src/nope.ts\n+++ b/src/nope.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n"
@@ -560,11 +560,159 @@ def test_diff_problems_are_named():
 
 def test_usable_first_answer_kept_when_retry_raises(f_messages, graph, ws, fake_client):
     fake_client.queue(bad_trace(f_messages), RuntimeError("boom"))
-    t, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "model_retry" and fake_client.calls == 2
     assert all(s.file != "src/nope.ts" for s in t.attack_path)
     no_guard = good_trace(f_messages)
     no_guard.attack_path = no_guard.attack_path[:2]
     fake_client.queue(bad_trace(f_messages), no_guard)
-    t, how = trace_with_validation(f_messages, graph, ws, fake_client)
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "model_retry" and len(t.attack_path) == 3
+
+
+# --- fix round 2 ----------------------------------------------------------------------
+
+TIGHTEN = "supabase/migrations/0003_tighten.sql"
+VULN_APP = Path(__file__).parent / "fixtures" / "vuln_app"
+
+
+def _whole_file_deletion(keep_last: bool = False) -> str:
+    real = (VULN_APP / TIGHTEN).read_text().splitlines()
+    gone = real[:-1] if keep_last else real
+    body = "".join(f"-{x}\n" for x in gone)
+    return f"--- a/{TIGHTEN}\n+++ /dev/null\n@@ -1,{len(gone)} +0,0 @@\n{body}"
+
+
+# (name, diff, accepted). git apply --check must agree with check_diff on every one.
+GIT_CASES = [
+    ("exact", GOOD_DIFF, True),
+    ("offset by 10 lines", GOOD_DIFF.replace("@@ -40,2 +40,4 @@", "@@ -30,2 +30,4 @@"), True),
+    # git pins a hunk with context at line 1 to the start of the file.
+    (
+        "says line 1 but sits at the end",
+        GOOD_DIFF.replace("@@ -40,2 +40,4 @@", "@@ -1,2 +1,4 @@"),
+        False,
+    ),
+    # git pins a hunk with no context after its last change to the end of the file.
+    (
+        "no trailing context mid-file",
+        (
+            f"--- a/{MIGRATION}\n+++ b/{MIGRATION}\n@@ -6,1 +6,2 @@\n"
+            " alter table public.profiles enable row level security;\n+-- x\n"
+        ),
+        False,
+    ),
+    (
+        "trailing context mid-file, offset by 5",
+        (
+            f"--- a/{MIGRATION}\n+++ b/{MIGRATION}\n@@ -11,2 +11,3 @@\n"
+            " alter table public.profiles enable row level security;\n+-- x\n \n"
+        ),
+        True,
+    ),
+    ("old count too big", GOOD_DIFF.replace("@@ -40,2 +40,4 @@", "@@ -40,3 +40,4 @@"), False),
+    ("new count too big", GOOD_DIFF.replace("@@ -40,2 +40,4 @@", "@@ -40,2 +40,5 @@"), False),
+    ("no hunks", f"--- a/{MIGRATION}\n+++ b/{MIGRATION}\n", False),
+    (
+        "creates an existing file",
+        f"--- /dev/null\n+++ b/{MIGRATION}\n@@ -0,0 +1,1 @@\n+select 1;\n",
+        False,
+    ),
+    (
+        "dot dot path",
+        "--- a/../outside.sql\n+++ b/../outside.sql\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+        False,
+    ),
+    (
+        "absolute path",
+        "--- /etc/hosts\n+++ /etc/hosts\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+        False,
+    ),
+    ("inner whitespace differs", GOOD_DIFF.replace("   body text", "   body   text"), False),
+    (
+        "new file",
+        "--- /dev/null\n+++ b/supabase/migrations/0004_x.sql\n@@ -0,0 +1,1 @@\n+select 1;\n",
+        True,
+    ),
+    ("deletes a whole file", _whole_file_deletion(), True),
+    ("deletes part of a file", _whole_file_deletion(keep_last=True), False),
+]
+
+# Cases where check_diff is deliberately stricter or looser than git, so not git-checked.
+STRICT_CASES = [
+    # git reads the hunk by its counts and silently drops the extra added line.
+    ("new count too small", GOOD_DIFF.replace("@@ -40,2 +40,4 @@", "@@ -40,2 +40,3 @@"), False),
+    # Blank context alone could sit anywhere, so the hunk is not anchored (git accepts it).
+    (
+        "only blank context",
+        f"--- a/{MIGRATION}\n+++ b/{MIGRATION}\n@@ -5,1 +5,2 @@\n+-- x\n \n",
+        False,
+    ),
+    (
+        "adds a placeholder",
+        GOOD_DIFF.replace("+alter table", "+-- key <redacted>\n+alter table").replace(
+            "+40,4", "+40,5"
+        ),
+        False,
+    ),
+    # Leading indent is ignored, and placeholders in removed lines stand for the hidden text.
+    ("leading indent differs", GOOD_DIFF.replace("   body text", " body text"), True),
+    (
+        "env placeholder",
+        "--- a/.env\n+++ b/.env\n@@ -4,1 +3,0 @@\n-VITE_OPENAI_API_KEY=<redacted>\n",
+        True,
+    ),
+    ("only a placeholder", "--- a/.env\n+++ b/.env\n@@ -4,1 +3,0 @@\n-<redacted>\n", False),
+]
+
+
+def _git_accepts(diff: str, work: Path) -> bool:
+    r = subprocess.run(
+        ["git", "apply", "--check", "-"],
+        input=diff,
+        cwd=work,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return r.returncode == 0
+
+
+@pytest.mark.parametrize(("name", "diff", "accepted"), GIT_CASES + STRICT_CASES)
+def test_check_diff_cases(name, diff, accepted, ws):
+    assert (check_diff(diff, ws) == []) is accepted, (name, check_diff(diff, ws))
+
+
+def test_check_diff_agrees_with_git_apply(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    work = tmp_path / "app"
+    shutil.copytree(VULN_APP, work)
+    subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+    ws = load_workspace(work)
+    for name, diff, accepted in GIT_CASES:
+        assert _git_accepts(diff, work) is accepted, f"git disagrees with the case: {name}"
+        assert (check_diff(diff, ws) == []) is accepted, (name, check_diff(diff, ws))
+
+
+def test_hunk_match_nearest_the_header_wins():
+    real = ["a", "x", "b", "x", "c", "x"]
+    assert _hunk_at(["x"], 4, real) == 3
+    assert _hunk_at(["x"], 1, real) == 1
+    assert _hunk_at(["x"], 99, real) == 5
+    assert _hunk_at(["nope"], 1, real) is None
+
+
+def test_retry_keeps_the_answer_with_fewer_problems(f_messages, graph, ws, fake_client):
+    worse = bad_trace(f_messages)
+    worse.attack_path.append(step(file="src/also-nope.ts", line=1))
+    fake_client.queue(bad_trace(f_messages), worse)
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
+    assert how == "model_retry" and fake_client.calls == 2
+    assert fake_client.last_feedback is not None and "src/nope.ts" in fake_client.last_feedback
+    assert len(t.attack_path) == 3
+    better = bad_trace(f_messages)
+    better.attack_path = better.attack_path[:3] + [step(node_id="table:ghost")]
+    fake_client.queue(worse, better)
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
+    assert how == "model_retry" and all(s.node_id != "table:ghost" for s in t.attack_path)

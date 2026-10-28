@@ -423,8 +423,8 @@ def _secret_diff(ctx: _Ctx, ref: CodeRef | None, var: str, replacement: str | No
     name = ref.file.rsplit("/", 1)[-1]
     if name == ".env" or name.startswith(".env."):
         real = lines[ref.start_line - 1] if lines and ref.start_line <= len(lines) else ""
-        key = real.split("=", 1)[0].strip() if "=" in real else var
-        old = [f"{key}={REDACTED}"]
+        # Same text as the prompt shows: everything up to the first "=", then the placeholder.
+        old = [real[: real.index("=") + 1] + REDACTED if "=" in real else f"{var}={REDACTED}"]
         return _file_diff(
             ref.file, [(ref.start_line, old, [] if replacement is None else [replacement])]
         )
