@@ -68,6 +68,10 @@
           "title": "Data",
           "type": "string"
         },
+        "item_id": {
+          "title": "Item Id",
+          "type": "string"
+        },
         "node_id": {
           "title": "Node Id",
           "type": "string"
@@ -108,6 +112,7 @@
         "zone",
         "ref",
         "node_id",
+        "item_id",
         "data",
         "story",
         "why",

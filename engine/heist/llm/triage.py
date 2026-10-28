@@ -102,12 +102,13 @@ def triage(
     claimed: set[str] = set()
     for group in out.groups:
         ids = [i for i in dict.fromkeys(group) if i in by_id and i not in claimed]
+        heist_ids = [i for i in order if i in ids and by_id[i].source == "heist"]
+        if heist_ids:
+            # Heist findings are distinct problems: only scanner findings fold into one.
+            ids = [heist_ids[0], *[i for i in ids if by_id[i].source != "heist"]]
         if len(ids) < 2:
             continue
         claimed.update(ids)
-        heist_ids = [i for i in order if i in ids and by_id[i].source == "heist"]
-        if heist_ids and by_id[ids[0]].source != "heist":
-            ids = [heist_ids[0], *[i for i in ids if i != heist_ids[0]]]
         primary = ids[0]
         result = by_id[primary]
         for other in ids[1:]:

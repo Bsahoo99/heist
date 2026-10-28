@@ -96,7 +96,11 @@ def _trace_all(
         return {f.id: (fallback_trace(f, g, ws), "fallback") for f in findings}
 
     def one(f: Finding) -> tuple[TraceOut, TraceSource]:
-        return trace_with_validation(f, g, ws, client, findings=findings)
+        try:
+            return trace_with_validation(f, g, ws, client, findings=findings)
+        except Exception as exc:  # noqa: BLE001 - one bad trace must not sink the analysis
+            log.warning("trace %s crashed, using the template: %s", f.id, type(exc).__name__)
+            return fallback_trace(f, g, ws), "fallback"
 
     with ThreadPoolExecutor(max_workers=TRACE_WORKERS) as pool:
         results = list(pool.map(one, findings))
@@ -106,7 +110,8 @@ def _trace_all(
 def _prove(
     prove: Prove | None, g: AppGraph, ws: Workspace, findings: list[Finding]
 ) -> dict[str, list[ProofRow]]:
-    ids = [f.id for f in findings if f.mistake == PROVED_MISTAKE]
+    # Only confirmed leaks are proved: a "possible" finding (often meant to be public) never is.
+    ids = [f.id for f in findings if f.mistake == PROVED_MISTAKE and f.status == "confirmed"]
     if prove is None or g.db is None or not ids:
         return {}
     try:

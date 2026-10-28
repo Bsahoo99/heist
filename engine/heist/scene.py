@@ -24,7 +24,8 @@ _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 class PathStep(BaseModel):
     zone: ZoneId
     ref: CodeRef | None  # None only for stops with no code (visitor, Supabase Auth)
-    node_id: str
+    node_id: str  # the precise graph node, which may be one the map never draws
+    item_id: str  # the map item in this step's zone that stands for node_id
     data: str
     story: str
     why: str
@@ -99,12 +100,67 @@ def _step_ref(step: StepOut, nodes: dict[str, Node]) -> CodeRef | None:
     return CodeRef(file=step.file, start_line=step.line, end_line=step.line, symbol=symbol)
 
 
-def _path(steps: list[StepOut], nodes: dict[str, Node]) -> list[PathStep]:
+class _Items:
+    """Maps any graph node to the map item that stands for it.
+
+    A policy maps to its table, a client call to its page; other visible nodes map to
+    themselves. Failing that, the nearest item in the same zone (same file first) is used.
+    """
+
+    def __init__(self, g: AppGraph):
+        self.nodes = {n.id: n for n in g.nodes}
+        self.by_zone: dict[str, list[Node]] = {z: [] for z in ZONE_ORDER}
+        for n in sorted(g.nodes, key=lambda n: n.id):
+            if n.kind not in HIDDEN_KINDS:
+                self.by_zone[n.zone].append(n)
+        self.edges = g.edges
+
+    def _candidates(self, node: Node) -> list[str]:
+        if node.kind == "policy":
+            return [f"table:{node.id.split(':', 2)[1]}"]
+        if node.kind == "client_call":
+            own = [f"page:{node.ref.file}"] if node.ref else []
+            linked: set[str] = set()
+            for e in self.edges:
+                if e.dst == node.id:
+                    linked.add(e.src)
+                elif e.src == node.id:
+                    linked.add(e.dst)
+            return [*own, *sorted(i for i in linked if i.startswith("page:"))]
+        return [node.id]
+
+    def resolve(self, node_id: str, zone: str) -> str:
+        items = self.by_zone.get(zone, [])
+        ids = {n.id for n in items}
+        node = self.nodes.get(node_id)
+        if node is None:
+            return node_id if node_id in ids or not items else items[0].id
+        for cand in self._candidates(node):
+            if cand in ids:
+                return cand
+        if not items:
+            log.warning("no map item in zone %s for %s", zone, node_id)
+            return node_id
+        ref = node.ref
+        if ref is not None:
+            same_file = [n for n in items if n.ref is not None and n.ref.file == ref.file]
+            if same_file:
+
+                def distance(n: Node) -> tuple[int, str]:
+                    start = n.ref.start_line if n.ref else 0
+                    return (abs(start - ref.start_line), n.id)
+
+                return min(same_file, key=distance).id
+        return items[0].id
+
+
+def _path(steps: list[StepOut], nodes: dict[str, Node], items: _Items) -> list[PathStep]:
     return [
         PathStep(
             zone=s.zone,
             ref=_step_ref(s, nodes),
             node_id=s.node_id,
+            item_id=items.resolve(s.node_id, s.zone),
             data=s.data,
             story=s.story,
             why=s.why,
@@ -114,15 +170,15 @@ def _path(steps: list[StepOut], nodes: dict[str, Node]) -> list[PathStep]:
     ]
 
 
-def _zones(g: AppGraph, flagged: set[str]) -> list[SceneZone]:
-    by_zone: dict[str, list[SceneItem]] = {z: [] for z in ZONE_ORDER}
-    for n in sorted(g.nodes, key=lambda n: n.id):
-        if n.kind in HIDDEN_KINDS:
-            continue
-        by_zone[n.zone].append(
+def _zones(items: _Items, flagged: set[str]) -> list[SceneZone]:
+    out: list[SceneZone] = []
+    for z in ZONE_ORDER:
+        zone_items = [
             SceneItem(node_id=n.id, label=n.name, kind=n.kind, flagged=n.id in flagged)
-        )
-    return [SceneZone(id=z, active=bool(by_zone[z]), items=by_zone[z]) for z in ZONE_ORDER]
+            for n in items.by_zone[z]
+        ]
+        out.append(SceneZone(id=z, active=bool(zone_items), items=zone_items))
+    return out
 
 
 def _rank(f: SceneFinding) -> tuple[int, int, int, str]:
@@ -142,12 +198,15 @@ def build_scene(
     proofs: dict[str, list[ProofRow]],
     meta: SceneMeta,
 ) -> Scene:
-    """Assemble the Scene. A finding with proof rows becomes proved; meta.checks_held is set here.
+    """Assemble the Scene. meta.checks_held is set here.
+
+    A confirmed finding with proof rows becomes proved; a possible one never does.
 
     Findings are sorted proved, confirmed, possible, then by severity, mistake and id, so
     findings[0] is the worst one and the one that auto-plays.
     """
     nodes = {n.id: n for n in g.nodes}
+    items = _Items(g)
     out: list[SceneFinding] = []
     for f in findings:
         if not f.refs:
@@ -157,7 +216,7 @@ def build_scene(
             log.warning("finding %s has no trace, skipping it", f.id)
             continue
         trace, source = traces[f.id]
-        rows = proofs.get(f.id, [])
+        rows = proofs.get(f.id, []) if f.status != "possible" else []
         out.append(
             SceneFinding(
                 id=f.id,
@@ -165,8 +224,8 @@ def build_scene(
                 severity=f.severity,
                 status="proved" if rows else f.status,
                 title=f.title,
-                ghost_path=_path(trace.ghost_path, nodes),
-                attack_path=_path(trace.attack_path, nodes),
+                ghost_path=_path(trace.ghost_path, nodes, items),
+                attack_path=_path(trace.attack_path, nodes, items),
                 guard_ref=f.refs[0],
                 proof_rows=rows,
                 fix=Fix(
@@ -177,10 +236,16 @@ def build_scene(
         )
     out.sort(key=_rank)
     kept = {x.id for x in out}
-    flagged = {i for f in findings if f.id in kept for i in f.node_ids}
+    flagged = {
+        items.resolve(i, nodes[i].zone)
+        for f in findings
+        if f.id in kept
+        for i in f.node_ids
+        if i in nodes
+    }
     return Scene(
         version=1,
-        zones=_zones(g, flagged),
+        zones=_zones(items, flagged),
         findings=out,
         meta=meta.model_copy(update={"checks_held": checks_held(out)}),
     )

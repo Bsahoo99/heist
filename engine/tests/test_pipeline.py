@@ -8,7 +8,7 @@ from typing import Any, Literal, TypeVar
 import pytest
 from pydantic import BaseModel
 
-from heist import pipeline
+from heist import cli, pipeline
 from heist.cli import FIXTURE_TIME, main
 from heist.detect.run import run_detectors
 from heist.fetch import UnsupportedRepo, Workspace
@@ -90,8 +90,9 @@ def test_pipeline_vuln_app(vuln_app_path, fake_client):
 
 def test_pipeline_clean_app(clean_app_path, fake_client):
     s = run_analysis(str(clean_app_path), lambda e: None, fake_client)
+    assert s.findings == []
     assert s.meta.checks_held == 7
-    assert all(f.status == "possible" for f in s.findings)
+    assert all(not i.flagged for z in s.zones for i in z.items)
 
 
 def test_pipeline_without_rules(tmp_copy, vuln_app_path, fake_client):
@@ -328,3 +329,92 @@ def test_web_fixtures_are_current(name, tmp_path):
     )
     assert code == 0
     assert out.read_text() == (WEB_FIXTURES / f"{name}-scene.json").read_text()
+
+
+def _assert_steps_on_map(s: Scene) -> None:
+    items = {z.id: {i.node_id for i in z.items} for z in s.zones}
+    for f in s.findings:
+        for st in [*f.ghost_path, *f.attack_path]:
+            assert st.item_id in items[st.zone], (f.id, st.node_id, st.item_id)
+
+
+@pytest.mark.parametrize("name", ["vuln", "clean"])
+def test_web_fixture_steps_point_at_map_items(name):
+    _assert_steps_on_map(
+        Scene.model_validate_json((WEB_FIXTURES / f"{name}-scene.json").read_text())
+    )
+
+
+def test_offline_steps_point_at_map_items(vuln_app_path):
+    s = run_analysis(str(vuln_app_path), lambda e: None, None)
+    _assert_steps_on_map(s)
+    steps = [st for f in s.findings for st in [*f.ghost_path, *f.attack_path]]
+    policy = [st for st in steps if st.node_id == "policy:adoption_requests:requests_select_authed"]
+    assert policy and all(st.item_id == "table:adoption_requests" for st in policy)
+    calls = [st for st in steps if st.node_id == "client:src/pages/Requests.tsx:9"]
+    assert calls and all(st.item_id == "page:src/pages/Requests.tsx" for st in calls)
+    plain = [st for st in steps if st.node_id == "table:messages"]
+    assert plain and all(st.item_id == "table:messages" for st in plain)
+
+
+def test_online_steps_point_at_map_items(vuln_app_path, fake_client):
+    _assert_steps_on_map(run_analysis(str(vuln_app_path), lambda e: None, fake_client))
+
+
+def test_policy_finding_flags_its_table(vuln_app_path, monkeypatch):
+    real = pipeline.run_detectors
+
+    def only_policy(ws, g) -> list[Finding]:
+        f = next(x for x in real(ws, g) if x.id == "m3-adoption_requests")
+        return [
+            f.model_copy(update={"node_ids": ["policy:adoption_requests:requests_select_authed"]})
+        ]
+
+    monkeypatch.setattr(pipeline, "run_detectors", only_policy)
+    s = run_analysis(str(vuln_app_path), lambda e: None, None)
+    flagged = {i.node_id for z in s.zones for i in z.items if i.flagged}
+    assert flagged == {"table:adoption_requests"}
+
+
+def test_prove_gets_only_confirmed_and_never_upgrades_possible(vuln_app_path):
+    seen: list[list[str]] = []
+    row = ProofRow(as_who="anonymous", table="pets", row={"name": "Test Alice's cat"})
+
+    def prove(db: DbSchema, ws: Workspace, ids: list[str]) -> dict[str, list[ProofRow]]:
+        seen.append(ids)
+        return {"m3-pets": [row], "m3-messages": [row]}
+
+    s = run_analysis(str(vuln_app_path), lambda e: None, None, prove)
+    assert seen == [["m3-adoption_requests", "m3-messages"]]
+    pets = next(f for f in s.findings if f.id == "m3-pets")
+    assert pets.status == "possible" and pets.proof_rows == []
+    assert next(f for f in s.findings if f.id == "m3-messages").status == "proved"
+
+
+def test_one_trace_crash_falls_back_for_that_finding(vuln_app_path, fake_client, monkeypatch):
+    real = pipeline.trace_with_validation
+
+    def flaky(f, g, ws, client, *, findings):
+        if f.id == "m3-messages":
+            raise ValueError("boom")
+        return real(f, g, ws, client, findings=findings)
+
+    monkeypatch.setattr(pipeline, "trace_with_validation", flaky)
+    s = run_analysis(str(vuln_app_path), lambda e: None, fake_client)
+    offline = run_analysis(str(vuln_app_path), lambda e: None, None)
+    assert {f.id for f in s.findings} == {f.id for f in offline.findings}
+    sources = {f.id: f.trace_source for f in s.findings}
+    assert sources["m3-messages"] == "fallback"
+    assert all(v != "fallback" for k, v in sources.items() if k != "m3-messages")
+
+
+def test_cli_online_without_open_key_exits_1(vuln_app_path, tmp_path, monkeypatch, capsys):
+    def no_client(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("must stop before building a client")
+
+    monkeypatch.setattr(cli, "ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.delenv("OPEN_API_KEY", raising=False)
+    monkeypatch.setattr(MetaClient, "from_env", no_client)
+    assert main(["analyze", str(vuln_app_path), "--out", str(tmp_path / "s.json")]) == 1
+    assert "Set OPEN_API_KEY in engine/.env or use --offline" in capsys.readouterr().err
+    assert not (tmp_path / "s.json").exists()

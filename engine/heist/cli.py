@@ -8,13 +8,14 @@ from pathlib import Path
 
 from heist.fetch import UnsupportedRepo
 from heist.llm.client import MetaClient
-from heist.llm.config import load_env
+from heist.llm.config import env, load_env
 from heist.models import ProgressEvent
 from heist.pipeline import GENERIC_ERROR_COPY, run_analysis
 
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 # The analyzed time written into the checked-in web fixtures, so they diff cleanly.
 FIXTURE_TIME = "2026-10-26T00:00:00Z"
+NO_KEY_COPY = "Set OPEN_API_KEY in engine/.env or use --offline"
 
 
 def _print_event(e: ProgressEvent) -> None:
@@ -47,6 +48,9 @@ def main(argv: list[str] | None = None) -> int:
     client: MetaClient | None = None
     if not args.offline:
         load_env(ENV_PATH)
+        if not env("OPEN_API_KEY"):
+            print(NO_KEY_COPY, file=sys.stderr)
+            return 1
         client = MetaClient.from_env()
     try:
         scene = run_analysis(args.source, _print_event, client, analyzed_at=args.analyzed_at)

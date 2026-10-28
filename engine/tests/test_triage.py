@@ -173,3 +173,40 @@ def test_heist_finding_is_always_group_primary(setup):
     assert out[0].source == "heist"
     assert out[0].severity == "high"
     assert len(out[0].refs) == 2
+
+
+def test_triage_never_merges_two_heist_findings(setup):
+    ws, g, findings = setup
+    with respx.mock() as router:
+        router.post(OPEN_URL).mock(
+            return_value=reply({"groups": [["m3-adoption_requests", "m3-messages"]], "noise": []})
+        )
+        out = triage(findings, g, ws, client())
+    ids = [f.id for f in out]
+    assert ids == [f.id for f in findings]
+    by_id = {f.id: f for f in out}
+    originals = {f.id: f for f in findings}
+    assert by_id["m3-adoption_requests"] == originals["m3-adoption_requests"]
+    assert by_id["m3-messages"] == originals["m3-messages"]
+
+
+def test_triage_folds_scanner_finding_into_heist_finding(setup):
+    ws, g, findings = setup
+    leak = mk("gl-openai", "gitleaks", "high", "confirmed", 4)
+    with respx.mock() as router:
+        router.post(OPEN_URL).mock(
+            return_value=reply(
+                {
+                    "groups": [["gl-openai", "m1-vite-openai-api-key", "m2-src-lib-admin-ts"]],
+                    "noise": [],
+                }
+            )
+        )
+        out = triage([*findings, leak], g, ws, client())
+    ids = [f.id for f in out]
+    assert "gl-openai" not in ids
+    assert ids == [f.id for f in findings]
+    m1 = next(f for f in out if f.id == "m1-vite-openai-api-key")
+    assert leak.refs[0] in m1.refs and "n-gl-openai" in m1.node_ids
+    m2 = next(f for f in out if f.id == "m2-src-lib-admin-ts")
+    assert m2 == next(f for f in findings if f.id == "m2-src-lib-admin-ts")

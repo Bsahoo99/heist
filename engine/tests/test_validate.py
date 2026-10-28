@@ -716,3 +716,18 @@ def test_retry_keeps_the_answer_with_fewer_problems(f_messages, graph, ws, fake_
     fake_client.queue(worse, better)
     t, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
     assert how == "model_retry" and all(s.node_id != "table:ghost" for s in t.attack_path)
+
+
+def test_validation_crash_falls_back_instead_of_raising(
+    ws, graph, f_messages, fake_client, monkeypatch
+):
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("check_trace bug")
+
+    monkeypatch.setattr("heist.llm.trace.check_trace", boom)
+    good = fallback_trace(f_messages, graph, ws)
+    fake_client.queue(good, good)
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
+    assert how == "fallback"
+    assert t == fallback_trace(f_messages, graph, ws)
+    assert fake_client.calls == 2

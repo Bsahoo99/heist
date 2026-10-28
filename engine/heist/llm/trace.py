@@ -206,6 +206,7 @@ def trace_with_validation(
     for attempt in (1, 2):
         try:
             t = trace_finding(f, g, ws, client, feedback, findings=findings)
+            report = check_trace(t, f, g, ws)
         except ModelOutputError as exc:
             log.warning("trace %s attempt %d: unusable output", f.id, attempt)
             feedback = exc.errors or "the answer could not be parsed as the requested JSON"
@@ -214,7 +215,6 @@ def trace_with_validation(
             log.warning("trace %s attempt %d failed: %s", f.id, attempt, type(exc).__name__)
             feedback = "The previous request failed. Answer again with the requested JSON."
             continue
-        report = check_trace(t, f, g, ws)
         if not report.needs_retry:
             return report.trace, "model" if attempt == 1 else "model_retry"
         if not report.fatal and (usable is None or len(report.errors) <= usable[1]):
