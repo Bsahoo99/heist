@@ -226,7 +226,7 @@ describe("layoutLabels", () => {
   test("only shows the requested labels, scaled", () => {
     const labels = layoutLabels(placeItems(vulnScene), { only: new Set(["visitor"]), scale: 2 });
     expect(labels.map((l) => l.nodeId)).toEqual(["visitor"]);
-    expect(labels[0].font).toBe(28);
+    expect(labels[0].font).toBe(32);
   });
 
   test("puts +N on the last slot of an overflowing zone", () => {
@@ -287,6 +287,20 @@ describe("routePath", () => {
     const scene = fixtureScene({ tables: 12 });
     const r = routePath([step("vault", "table:table_12"), step("across_road", "ext:api.example.com")], scene);
     expect(Math.min(...r.points.map((p) => p.y))).toBeGreaterThanOrEqual(VIEWBOX.y + 12);
+  });
+
+  test("no call arc ever crosses the across-the-road title", () => {
+    const title = zoneTitles().find((t) => t.zone === "across_road")!;
+    for (const f of vulnScene.findings) {
+      for (const steps of [f.ghost_path, f.attack_path]) {
+        for (const p of routePath(steps, vulnScene).points) {
+          expect(overlaps(title.rect, { x: p.x - 2, y: p.y - 2, w: 4, h: 4 }), f.id).toBe(false);
+        }
+      }
+    }
+    // It sits at the block's far left.
+    const z = ZONES.across_road;
+    expect(title.rect.x).toBeLessThanOrEqual(isoToScreen(z.origin[0], z.origin[1] + z.size[1]).x + 1);
   });
 
   test("stacked steps make one stop with a count and no zero-length segment", () => {
@@ -385,8 +399,8 @@ describe("focusViewBox", () => {
     for (const t of zoneTitles(focusViewBox(cleanScene).labelScale)) expect(contains(whole, t.rect), t.zone).toBe(true);
   });
 
-  test("labels path items and flagged items only", () => {
-    const ids = focusLabelIds(cleanScene, [step("street", "visitor")], [step("vault", "table:pets")]);
+  test("labels only the items on the shown paths, not other flagged items", () => {
+    const ids = focusLabelIds(vulnScene, [step("street", "visitor")], [step("vault", "table:pets")]);
     expect([...ids].sort()).toEqual(["table:pets", "visitor"]);
   });
 });

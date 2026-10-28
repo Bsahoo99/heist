@@ -62,7 +62,7 @@ export const ZONES: Record<ZoneId, ZoneDef> = {
   shop_window: zone([0, 1], [5.5, 7.5], "Shop window", 2, 3, 16, "page"),
   guard_desk: zone([6.5, 3], [3, 4], "Guard desk", 1, 1, 12, "auth", { origin: [6.5, 3.5], size: [3, 4] }),
   side_doors: zone([10.5, 0], [5, 10], "Side doors", 2, 4, 16, "function"),
-  vault: zone([16.5, -2], [10, 8], "Vault", 4, 3, 26, "table"),
+  vault: zone([16.5, -2], [11, 8.5], "Vault", 4, 3, 26, "table"),
   warehouse: zone([16.5, 7], [10, 5], "Warehouse", 3, 2, 20, "bucket"),
 };
 
@@ -186,10 +186,10 @@ export function placeItems(scene: Scene): PlacedItem[] {
 // ---------------------------------------------------------------------------
 // Labels
 
-export const LABEL_FONT = 14;
+export const LABEL_FONT = 16;
 export const LABEL_MAX = 16;
 /** Zones more than half full use shorter labels so they still fit between boxes. */
-export const LABEL_MAX_DENSE = 12;
+export const LABEL_MAX_DENSE = 10;
 export const TITLE_FONT = 15;
 const CHAR_W = 0.58; // average Geist glyph width, in ems
 const LABEL_PAD_X = 16;
@@ -238,14 +238,18 @@ export function zoneTitles(scale = 1): TitleBox[] {
     const th = font + 4;
     let x: number;
     let y: number; // baseline
-    if (id === "warehouse") {
+    if (id === "across_road") {
+      // Below the block's far-left corner: calls land from the street side, so
+      // no arc ever crosses it.
+      const corner = isoToScreen(ox, oy + d);
+      x = corner.x + tw / 2;
+      y = corner.y + 42 * scale;
+    } else if (id === "warehouse") {
       const edge = isoToScreen(ox + w, oy + d / 2);
       x = edge.x + tw / 2 + 12 * scale;
       y = edge.y + font / 2;
     } else {
-      // Across the road, slide right along the back edge to clear the towers.
-      const along = id === "across_road" ? 0.8 : 0.5;
-      const edge = isoToScreen(ox + w * along, oy);
+      const edge = isoToScreen(ox + w / 2, oy);
       x = edge.x;
       y = edge.y - SLAB_H - z.wall - 10 * scale;
     }
@@ -553,11 +557,10 @@ export function narrowLabelScale(viewWidth: number): number {
   return Math.max(1, (11 * viewWidth) / 358 / LABEL_FONT);
 }
 
-/** The node ids a focused (narrow) map labels: items on the paths, and flagged items. */
+/** The node ids a focused (narrow) map labels: only the items on the shown paths. */
 export function focusLabelIds(scene: Scene, ghost: PathStep[] = [], attack: PathStep[] = []): Set<string> {
-  const ids = new Set([...ghost, ...attack].map((s) => s.item_id));
-  for (const p of placeItems(scene)) if (p.item.flagged) ids.add(p.item.node_id);
-  return ids;
+  const onMap = new Set(placeItems(scene).map((p) => p.item.node_id));
+  return new Set([...ghost, ...attack].map((s) => s.item_id).filter((id) => onMap.has(id)));
 }
 
 /**

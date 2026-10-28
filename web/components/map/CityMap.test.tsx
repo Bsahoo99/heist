@@ -129,7 +129,7 @@ describe("CityMap accessibility and determinism", () => {
 });
 
 describe("CityMap narrow framing", () => {
-  test("the focus map labels only path and flagged items and has a whole-map toggle", () => {
+  test("the focus map labels only the items on the path and has a whole-map toggle", () => {
     const finding = vulnScene.findings.find((f) => f.id === "m1-vite-openai-api-key")!;
     const { container } = render(
       <CityMap scene={vulnScene} ghost={finding.ghost_path} attack={finding.attack_path} />,
@@ -140,13 +140,11 @@ describe("CityMap narrow framing", () => {
     const focusLabels = [...focus.querySelectorAll("title")].slice(1).map((t) => t.textContent);
     expect(focusLabels).toContain("Visitor");
     expect(focusLabels).toContain("api.openai.com");
-    const allowed = new Set([
-      ...[...finding.ghost_path, ...finding.attack_path].map((st) => st.item_id),
-      ...vulnScene.zones.flatMap((z) => z.items.filter((i) => i.flagged).map((i) => i.node_id)),
-    ]);
+    const allowed = new Set([...finding.ghost_path, ...finding.attack_path].map((st) => st.item_id));
     const byLabel = new Map(vulnScene.zones.flatMap((z) => z.items.map((i) => [i.label, i.node_id])));
     for (const l of focusLabels) expect(allowed.has(byLabel.get(l ?? "") ?? ""), l ?? "").toBe(true);
-    expect(focusLabels).not.toContain("Upload.tsx"); // neither on the path nor flagged
+    expect(focusLabels).not.toContain("Upload.tsx"); // not on the path
+    expect(focusLabels).not.toContain("messages"); // flagged, but not on this path
     expect(screen.getByLabelText("Show whole map")).toBeTruthy();
   });
 
