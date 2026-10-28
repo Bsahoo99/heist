@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import type { PathStep, Scene, Zone as ZoneId } from "@/lib/scene.gen";
+import { FramedSvg } from "./FramedSvg";
 import {
   VIEWBOX,
   ZONES,
@@ -30,6 +32,24 @@ export type CityMapProps = {
   className?: string;
   /** Prefix for SVG ids; set a different one when two maps share a page. */
   idPrefix?: string;
+  /**
+   * Drawn above the paths and below the labels, in both renderings (the
+   * replay's walking sprite and markers). `labelScale` is the label size
+   * multiplier of that rendering.
+   */
+  overlay?: (ctx: { labelScale: number; focus: boolean }) => ReactNode;
+  /**
+   * Narrow screens: show this frame instead of the whole-route framing, and
+   * glide to each new one (the replay's step camera).
+   */
+  focusFrame?: FocusFrame;
+};
+
+export type FocusFrame = {
+  viewBox: ViewBox;
+  labelScale: number;
+  labelIds: Set<string>;
+  titleZones: Set<ZoneId>;
 };
 
 function summary(scene: Scene, flagged: number): string {
@@ -86,6 +106,8 @@ type SvgProps = {
   idPrefix: string;
   testIds: boolean;
   ariaLabel: string;
+  overlay?: ReactNode;
+  animated?: boolean;
 };
 
 function MapSvg({
@@ -101,19 +123,21 @@ function MapSvg({
   idPrefix,
   testIds,
   ariaLabel,
+  overlay,
+  animated,
 }: SvgProps) {
   const glowId = `${idPrefix}-glow`;
   const clipId = `${idPrefix}-clip`;
   const active = (id: ZoneId) => scene.zones.find((z) => z.id === id)?.active ?? false;
-  return (
-    <svg
-      role="img"
-      aria-label={ariaLabel}
-      viewBox={`${vb.x} ${vb.y} ${vb.width} ${vb.height}`}
-      preserveAspectRatio="xMidYMid meet"
-      className="citymap-svg"
-      fontFamily="var(--font-sans), system-ui, sans-serif"
-    >
+  const svgProps = {
+    role: "img",
+    "aria-label": ariaLabel,
+    preserveAspectRatio: "xMidYMid meet",
+    className: "citymap-svg",
+    fontFamily: "var(--font-sans), system-ui, sans-serif",
+  };
+  const body = (
+    <>
       <title>{`City map of ${scene.meta.repo}`}</title>
       <defs>
         <filter id={glowId} x="-60%" y="-60%" width="220%" height="220%">
@@ -148,6 +172,7 @@ function MapSvg({
         );
       })}
       <Paths ghost={ghost} attack={attack} progress={progress} testIds={testIds} />
+      {overlay}
       <g data-testid={testIds ? "labels" : undefined}>
         {titles.map((t) => (
           <ZoneTitle key={t.zone} t={t} active={active(t.zone)} highlighted={highlight?.zone === t.zone} />
@@ -156,6 +181,18 @@ function MapSvg({
           <ItemLabel key={l.nodeId} l={l} testIds={testIds} />
         ))}
       </g>
+    </>
+  );
+  if (animated) {
+    return (
+      <FramedSvg viewBox={vb} {...svgProps}>
+        {body}
+      </FramedSvg>
+    );
+  }
+  return (
+    <svg {...svgProps} viewBox={`${vb.x} ${vb.y} ${vb.width} ${vb.height}`}>
+      {body}
     </svg>
   );
 }
@@ -166,9 +203,10 @@ function MapSvg({
  * same SVG.
  *
  * Wide containers show the whole block. Narrow ones (under 640 px, switched
- * in CSS) show a second rendering framed on the finding's routes, labelling
- * only the items on them and flagged items, with a "Show whole map" toggle
- * that swaps in the full block in a sideways pan box.
+ * in CSS) show a second rendering framed on the finding's routes (or on
+ * `focusFrame`, the replay's step camera), labelling only the items on them,
+ * with a "Show whole map" toggle that swaps in the full block in a sideways
+ * pan box.
  */
 export function CityMap({
   scene,
@@ -178,13 +216,16 @@ export function CityMap({
   progress = 1,
   className,
   idPrefix = "citymap",
+  overlay,
+  focusFrame,
 }: CityMapProps) {
   const placed = placeItems(scene);
   const flaggedCount = placed.filter((p) => p.item.flagged).length;
   const ghostRoute = ghost ? routePath(ghost, scene) : undefined;
   const attackRoute = attack ? routePath(attack, scene) : undefined;
   const ariaLabel = summary(scene, flaggedCount);
-  const focus = focusViewBox(scene, ghost, attack);
+  const focus = focusFrame ?? focusViewBox(scene, ghost, attack);
+  const focusLabels = focusFrame ? focusFrame.labelIds : focusLabelIds(scene, ghost, attack);
   const common = { scene, placed, ghost: ghostRoute, attack: attackRoute, progress, highlight, ariaLabel };
 
   return (
@@ -197,12 +238,16 @@ export function CityMap({
         <MapSvg
           {...common}
           viewBox={focus.viewBox}
-          labels={layoutLabels(placed, { only: focusLabelIds(scene, ghost, attack), scale: focus.labelScale }).filter(
-            (l) => insideView(focus.viewBox, l.rect),
+          labels={layoutLabels(placed, { only: focusLabels, scale: focus.labelScale }).filter((l) =>
+            insideView(focus.viewBox, l.rect),
           )}
-          titles={zoneTitles(focus.labelScale).filter((t) => insideView(focus.viewBox, t.rect))}
+          titles={zoneTitles(focus.labelScale).filter(
+            (t) => (!focusFrame || focusFrame.titleZones.has(t.zone)) && insideView(focus.viewBox, t.rect),
+          )}
           idPrefix={`${idPrefix}-focus`}
           testIds={false}
+          overlay={overlay?.({ labelScale: focus.labelScale, focus: true })}
+          animated={Boolean(focusFrame)}
         />
       </div>
       <div className="citymap-full">
@@ -213,6 +258,7 @@ export function CityMap({
           titles={zoneTitles()}
           idPrefix={idPrefix}
           testIds
+          overlay={overlay?.({ labelScale: 1, focus: false })}
         />
       </div>
     </div>

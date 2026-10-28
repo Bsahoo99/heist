@@ -508,7 +508,7 @@ export function partialPath(points: Point[], fraction: number): Point[] {
 
 export type ViewBox = { x: number; y: number; width: number; height: number };
 
-function bbox(rects: Rect[], pad: number): ViewBox {
+export function bbox(rects: Rect[], pad: number): ViewBox {
   const x0 = Math.min(...rects.map((r) => r.x)) - pad;
   const y0 = Math.min(...rects.map((r) => r.y)) - pad;
   const x1 = Math.max(...rects.map((r) => r.x + r.w)) + pad;
@@ -516,9 +516,10 @@ function bbox(rects: Rect[], pad: number): ViewBox {
   return { x: Math.floor(x0), y: Math.floor(y0), width: Math.ceil(x1 - x0), height: Math.ceil(y1 - y0) };
 }
 
-const pointRect = (p: Point): Rect => ({ x: p.x, y: p.y, w: 0, h: 0 });
+export const pointRect = (p: Point): Rect => ({ x: p.x, y: p.y, w: 0, h: 0 });
 
-function zoneRects(id: ZoneId): Rect[] {
+/** The corners of a zone's slab and wall tops. */
+export function zoneRects(id: ZoneId): Rect[] {
   const z = ZONES[id];
   const [ox, oy] = z.origin;
   const [w, d] = z.size;

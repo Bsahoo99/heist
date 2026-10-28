@@ -136,3 +136,699 @@ body {
     height: auto;
   }
 }
+
+/* Results: the replay, the step player and the panels. Same night palette as
+   the map; red stays the one accent for the attack, cyan for the legitimate
+   route, sodium amber for locks that held. */
+:root {
+  --panel: #111c2e;
+  --panel-raised: #172539;
+  --panel-edge: #24344d;
+  --panel-edge-strong: #3a4f70;
+  --code-bg: #0a1220;
+  --sev-critical: #ff5d6c;
+  --sev-high: #ff99a2;
+  --sev-medium: var(--map-lamp);
+  --sev-low: var(--map-muted);
+}
+
+.results-page {
+  min-height: 100dvh;
+  background: var(--map-bg);
+  color: var(--map-ink);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+.dev-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--panel-edge);
+  font-size: 14px;
+}
+.dev-tag {
+  border-radius: 4px;
+  background: var(--map-badge-bg);
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--map-zone-ink);
+}
+.dev-repo {
+  font-weight: 600;
+  font-size: 14px;
+}
+.dev-nav {
+  display: flex;
+  gap: 4px;
+}
+.dev-nav a {
+  border-radius: 4px;
+  padding: 2px 8px;
+  color: var(--map-muted);
+}
+.dev-nav a:hover,
+.dev-nav a[aria-current="page"] {
+  color: var(--map-ink);
+}
+.dev-nav a[aria-current="page"] {
+  background: var(--map-slab-top);
+}
+
+.results {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  max-width: 1560px;
+  margin: 0 auto;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "head" "stage" "panel" "list";
+}
+@media (min-width: 1024px) {
+  .results {
+    grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas:
+      "head head"
+      "stage panel"
+      "stage list";
+    column-gap: 20px;
+  }
+}
+
+.results :focus-visible {
+  outline: 2px solid var(--map-ghost);
+  outline-offset: 2px;
+}
+
+/* Header */
+.results-head {
+  grid-area: head;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+}
+.results-head-tags {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.results-title {
+  flex: 1 1 320px;
+  min-width: 0;
+  font-size: 20px;
+  line-height: 1.3;
+  font-weight: 600;
+  text-wrap: balance;
+}
+.results-sub {
+  flex-basis: 100%;
+  color: var(--map-zone-ink);
+  font-size: 15px;
+}
+.results-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--map-muted);
+}
+.results-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.phase-key {
+  display: inline-block;
+  flex: none;
+  width: 22px;
+  border-top: 3px solid var(--map-flag);
+}
+.phase-key-ghost {
+  border-top: 2px dashed var(--map-ghost);
+}
+.phase-key-lock {
+  border-top-color: var(--map-lamp);
+}
+
+/* Stage: map, caption, player */
+.results-stage {
+  grid-area: stage;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.replay {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.replay-map {
+  position: relative;
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+  background: var(--map-bg);
+  padding: 8px;
+}
+.replay-map:focus-visible {
+  outline: 2px solid var(--map-ghost);
+  outline-offset: 2px;
+}
+.replay-map .citymap {
+  /* Size to the map, so cards placed after it on phones stay inside the box. */
+  height: auto;
+}
+.replay-map .citymap-full .citymap-svg {
+  height: auto;
+  max-height: calc(100dvh - 330px);
+  min-height: 280px;
+}
+.replay-map .citymap-focus .citymap-svg {
+  aspect-ratio: 358 / 300;
+  height: auto;
+}
+
+.replay-caption {
+  min-height: 84px;
+  padding: 0 4px;
+}
+.replay-caption-phase {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--map-muted);
+}
+.replay-caption-story {
+  margin-top: 6px;
+  max-width: 64ch;
+  font-size: 19px;
+  line-height: 1.45;
+  font-weight: 500;
+  color: var(--map-ink);
+  text-wrap: pretty;
+}
+/* The proof climax sits in the open ground at the map's front-left corner,
+   clear of the routes and the vault. */
+.replay-proof {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  width: min(380px, 40%);
+  padding: 10px 14px;
+  border: 1px solid var(--map-flag);
+  border-radius: 12px;
+  background: rgba(9, 15, 27, 0.94);
+  box-shadow: 0 0 0 4px var(--map-flag-soft);
+}
+.replay-proof .proof-rows table {
+  font-size: 13px;
+  table-layout: fixed;
+  width: 100%;
+}
+.proof-rows.proof-rows-compact {
+  /* Not a query container: the compact card keeps its table at any width. */
+  container-type: normal;
+}
+.proof-rows.proof-rows-compact td,
+.proof-rows.proof-rows-compact td:last-child {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.replay-proof .proof-rows-group figcaption {
+  color: var(--map-flag-ink);
+}
+
+/* The end card sits in the open ground at the map's front-left corner, so
+   every door, marker and route stays in view. */
+.replay-end {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  width: min(360px, 40%);
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 16px 18px;
+  border: 1px solid var(--panel-edge-strong);
+  border-radius: 12px;
+  background: rgba(9, 15, 27, 0.94);
+}
+.replay-end-clean {
+  border-color: var(--map-lamp);
+}
+.replay-end-title {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.replay-end-text {
+  font-size: 14px;
+  color: var(--map-zone-ink);
+}
+.replay-badge {
+  border: 1px solid var(--map-lamp);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--map-lamp);
+}
+.replay-again {
+  margin-top: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-edge-strong);
+  padding: 5px 14px;
+  font-size: 14px;
+  color: var(--map-ink);
+  cursor: pointer;
+}
+.replay-again:hover {
+  background: var(--panel-raised);
+}
+
+/* Step player */
+.step-player {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.step-player-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.player-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  color: var(--map-ink);
+  cursor: pointer;
+}
+.player-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+.player-btn:hover:not(:disabled) {
+  background: var(--panel-raised);
+}
+.player-btn:disabled {
+  color: var(--panel-edge-strong);
+  cursor: default;
+}
+.player-btn-main {
+  width: 44px;
+  height: 44px;
+  background: var(--map-ink);
+  color: var(--map-bg);
+}
+.player-btn-main:hover:not(:disabled) {
+  background: #ffffff;
+}
+.step-player-track {
+  flex: 1;
+  min-width: 0;
+}
+.step-player-segments {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 16px;
+}
+.step-seg {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--map-flag);
+  opacity: 0.25;
+  cursor: pointer;
+  transition: opacity 0.2s, height 0.2s;
+}
+.step-seg[data-kind="ghost"] {
+  background: var(--map-ghost);
+}
+.step-seg[data-kind="lock-held"] {
+  background: var(--map-lamp);
+}
+.step-seg[data-done="true"] {
+  opacity: 0.6;
+}
+.step-seg[aria-current="step"] {
+  opacity: 1;
+  height: 10px;
+}
+.step-player-where {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--map-ink);
+  font-variant-numeric: tabular-nums;
+}
+.step-player-kind {
+  color: var(--map-muted);
+}
+
+/* Step panel */
+.results-panel {
+  grid-area: panel;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.step-panel {
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 14px 16px 16px;
+}
+.step-panel-heading {
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.step-panel-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+  border-bottom: 1px solid var(--panel-edge);
+}
+.step-panel-tab {
+  margin-bottom: -1px;
+  padding: 6px 10px;
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+  color: var(--map-muted);
+  cursor: pointer;
+}
+.step-panel-tab:hover {
+  color: var(--map-ink);
+}
+.step-panel-tab[aria-selected="true"] {
+  border-bottom-color: var(--map-ink);
+  color: var(--map-ink);
+  font-weight: 600;
+}
+.step-panel-body {
+  padding-top: 14px;
+  /* Tall enough for a typical Code tab, so switching tabs does not move the list below. */
+  min-height: 150px;
+}
+.step-panel-body:focus-visible {
+  outline-offset: 4px;
+}
+.step-panel-story {
+  font-size: 17px;
+  line-height: 1.55;
+}
+.step-panel-text {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--map-ink);
+}
+.step-panel-code {
+  display: grid;
+  gap: 10px;
+}
+.step-panel-ref {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--map-zone-ink);
+  overflow-wrap: anywhere;
+}
+.step-panel-code pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  border: 1px solid var(--panel-edge);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.step-panel-data dt {
+  font-size: 13px;
+  color: var(--map-muted);
+}
+.step-panel-data dd {
+  margin-top: 2px;
+  font-size: 15px;
+}
+
+/* Proof */
+.results-proof {
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 14px 16px 16px;
+}
+.results-proof h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.results-proof > p {
+  margin: 6px 0 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--map-zone-ink);
+}
+.proof-rows {
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.proof-rows-group {
+  min-width: 0;
+  border-left: 3px solid var(--map-flag);
+  padding-left: 12px;
+}
+.proof-rows-group figcaption {
+  font-size: 13px;
+  color: var(--map-muted);
+}
+.proof-rows-group code {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  color: var(--map-ink);
+}
+.proof-rows-scroll {
+  margin-top: 6px;
+  overflow-x: auto;
+}
+.proof-rows table {
+  border-collapse: collapse;
+  font-size: 14px;
+  min-width: 100%;
+}
+.proof-rows th {
+  padding: 4px 12px 4px 0;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--map-muted);
+  white-space: nowrap;
+}
+.proof-rows td {
+  padding: 5px 12px 5px 0;
+  border-top: 1px solid var(--panel-edge);
+  color: var(--map-flag-ink);
+  vertical-align: top;
+  white-space: nowrap;
+}
+/* The last column (usually free text) wraps at word breaks; the rest stay whole. */
+.proof-rows td:last-child {
+  white-space: normal;
+  min-width: 12ch;
+}
+.proof-rows td:last-child,
+.proof-rows th:last-child {
+  padding-right: 0;
+}
+
+/* Narrow: each leaked row becomes a small card of "column value" lines. */
+@container (max-width: 400px) {
+  .proof-rows thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .proof-rows table,
+  .proof-rows tbody {
+    display: block;
+  }
+  .proof-rows tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 2px 12px;
+    padding: 8px 0;
+    border-top: 1px solid var(--panel-edge);
+  }
+  .proof-rows td,
+  .proof-rows td:last-child {
+    display: contents;
+    white-space: normal;
+  }
+  .proof-rows td::before {
+    content: attr(data-col);
+    font-size: 12px;
+    line-height: 20px;
+    color: var(--map-muted);
+  }
+}
+
+/* Findings */
+.results-list {
+  grid-area: list;
+  min-width: 0;
+}
+.results-list-title {
+  margin-bottom: 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.findings-list {
+  display: grid;
+  gap: 6px;
+}
+.finding-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: "sev badge" "title title";
+  align-items: center;
+  gap: 4px 10px;
+  width: 100%;
+  padding: 10px 12px 10px 14px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: inset 3px 0 0 var(--sev, var(--sev-low));
+  text-align: left;
+  cursor: pointer;
+}
+.finding-row[data-severity="critical"] { --sev: var(--sev-critical); }
+.finding-row[data-severity="high"] { --sev: var(--sev-high); }
+.finding-row[data-severity="medium"] { --sev: var(--sev-medium); }
+.finding-row[data-severity="low"] { --sev: var(--sev-low); }
+.finding-row.border-dashed {
+  border-style: dashed;
+  border-color: var(--panel-edge-strong);
+  background: transparent;
+}
+.finding-row:hover {
+  background: var(--panel-raised);
+}
+.finding-row[aria-current="true"] {
+  border-color: var(--map-zone-ink);
+  background: var(--panel-raised);
+}
+.finding-row .finding-severity { grid-area: sev; }
+.finding-row .status-badge { grid-area: badge; justify-self: start; }
+.finding-title {
+  grid-area: title;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--map-ink);
+}
+.finding-severity {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sev-low);
+}
+.finding-severity[data-severity="critical"] { color: var(--sev-critical); }
+.finding-severity[data-severity="high"] { color: var(--sev-high); }
+.finding-severity[data-severity="medium"] { color: var(--sev-medium); }
+.status-badge {
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  border: 1px solid var(--map-flag);
+  color: var(--map-flag-ink);
+  white-space: nowrap;
+}
+.status-badge[data-status="proved"] {
+  background: var(--map-flag);
+  color: #1b0609;
+  font-weight: 600;
+}
+.status-badge[data-status="possible"] {
+  border-style: dashed;
+  border-color: var(--map-muted);
+  color: var(--map-zone-ink);
+}
+.findings-empty {
+  font-size: 14px;
+  color: var(--map-zone-ink);
+}
+
+@media (min-width: 1024px) {
+  .results-list .findings-list {
+    max-height: calc(100dvh - 140px);
+    overflow-y: auto;
+    padding-right: 2px;
+  }
+}
+
+@media (max-width: 639px) {
+  .results {
+    padding: 12px 16px;
+  }
+  .results-title {
+    font-size: 18px;
+  }
+  .replay-map {
+    padding: 4px;
+  }
+  .replay-caption-story {
+    font-size: 17px;
+  }
+  .replay-end {
+    position: static;
+    width: auto;
+    margin: 4px;
+    padding: 12px 14px;
+  }
+  .replay-proof {
+    position: static;
+    width: auto;
+    margin: 4px;
+  }
+  /* Full width under the map: room for whole values, one small card per row. */
+  .replay-proof .proof-rows.proof-rows-compact {
+    container-type: inline-size;
+  }
+  .replay-proof .proof-rows.proof-rows-compact td {
+    white-space: normal;
+    overflow: visible;
+  }
+  .step-player {
+    gap: 12px;
+    padding: 8px 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step-seg {
+    transition: none;
+  }
+}
