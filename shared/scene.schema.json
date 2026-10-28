@@ -1,0 +1,388 @@
+{
+  "$defs": {
+    "CodeRef": {
+      "properties": {
+        "end_line": {
+          "title": "End Line",
+          "type": "integer"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "start_line": {
+          "title": "Start Line",
+          "type": "integer"
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Symbol"
+        }
+      },
+      "required": [
+        "file",
+        "start_line",
+        "end_line"
+      ],
+      "title": "CodeRef",
+      "type": "object"
+    },
+    "Fix": {
+      "properties": {
+        "diff": {
+          "title": "Diff",
+          "type": "string"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "explanation",
+        "diff",
+        "prompt"
+      ],
+      "title": "Fix",
+      "type": "object"
+    },
+    "PathStep": {
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "data": {
+          "title": "Data",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "story": {
+          "title": "Story",
+          "type": "string"
+        },
+        "why": {
+          "title": "Why",
+          "type": "string"
+        },
+        "zone": {
+          "enum": [
+            "street",
+            "shop_window",
+            "guard_desk",
+            "side_doors",
+            "vault",
+            "warehouse",
+            "across_road"
+          ],
+          "title": "Zone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "zone",
+        "ref",
+        "node_id",
+        "data",
+        "story",
+        "why",
+        "code"
+      ],
+      "title": "PathStep",
+      "type": "object"
+    },
+    "ProofRow": {
+      "properties": {
+        "as_who": {
+          "enum": [
+            "anonymous",
+            "another_user"
+          ],
+          "title": "As Who",
+          "type": "string"
+        },
+        "row": {
+          "additionalProperties": true,
+          "title": "Row",
+          "type": "object"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_who",
+        "table",
+        "row"
+      ],
+      "title": "ProofRow",
+      "type": "object"
+    },
+    "SceneFinding": {
+      "properties": {
+        "attack_path": {
+          "items": {
+            "$ref": "#/$defs/PathStep"
+          },
+          "title": "Attack Path",
+          "type": "array"
+        },
+        "fix": {
+          "$ref": "#/$defs/Fix"
+        },
+        "ghost_path": {
+          "items": {
+            "$ref": "#/$defs/PathStep"
+          },
+          "title": "Ghost Path",
+          "type": "array"
+        },
+        "guard_ref": {
+          "$ref": "#/$defs/CodeRef"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "mistake": {
+          "title": "Mistake",
+          "type": "integer"
+        },
+        "proof_rows": {
+          "items": {
+            "$ref": "#/$defs/ProofRow"
+          },
+          "title": "Proof Rows",
+          "type": "array"
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "confirmed",
+            "proved",
+            "possible"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "trace_source": {
+          "enum": [
+            "model",
+            "model_retry",
+            "fallback"
+          ],
+          "title": "Trace Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "mistake",
+        "severity",
+        "status",
+        "title",
+        "ghost_path",
+        "attack_path",
+        "guard_ref",
+        "proof_rows",
+        "fix",
+        "trace_source"
+      ],
+      "title": "SceneFinding",
+      "type": "object"
+    },
+    "SceneItem": {
+      "properties": {
+        "flagged": {
+          "title": "Flagged",
+          "type": "boolean"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "kind",
+        "flagged"
+      ],
+      "title": "SceneItem",
+      "type": "object"
+    },
+    "SceneMeta": {
+      "properties": {
+        "analyzed_at": {
+          "format": "date-time",
+          "title": "Analyzed At",
+          "type": "string"
+        },
+        "checks_held": {
+          "title": "Checks Held",
+          "type": "integer"
+        },
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "has_db_rules": {
+          "title": "Has Db Rules",
+          "type": "boolean"
+        },
+        "models": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Models",
+          "type": "object"
+        },
+        "repo": {
+          "title": "Repo",
+          "type": "string"
+        },
+        "stack": {
+          "enum": [
+            "vite_supabase",
+            "next_supabase"
+          ],
+          "title": "Stack",
+          "type": "string"
+        },
+        "unparsed_migrations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unparsed Migrations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "repo",
+        "commit_sha",
+        "analyzed_at",
+        "stack",
+        "models",
+        "has_db_rules",
+        "unparsed_migrations",
+        "checks_held"
+      ],
+      "title": "SceneMeta",
+      "type": "object"
+    },
+    "SceneZone": {
+      "properties": {
+        "active": {
+          "title": "Active",
+          "type": "boolean"
+        },
+        "id": {
+          "enum": [
+            "street",
+            "shop_window",
+            "guard_desk",
+            "side_doors",
+            "vault",
+            "warehouse",
+            "across_road"
+          ],
+          "title": "Id",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/SceneItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "active",
+        "items"
+      ],
+      "title": "SceneZone",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/SceneFinding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/SceneMeta"
+    },
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "zones": {
+      "items": {
+        "$ref": "#/$defs/SceneZone"
+      },
+      "title": "Zones",
+      "type": "array"
+    }
+  },
+  "required": [
+    "version",
+    "zones",
+    "findings",
+    "meta"
+  ],
+  "title": "Scene",
+  "type": "object"
+}

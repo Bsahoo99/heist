@@ -242,6 +242,7 @@ def replay_migrations(ws: Workspace) -> DbSchema | None:
         return None
     state = _Replay()
     recorded: list[str] = []
+    unparsed: list[str] = []
     for rel in files:
         data = (ws.app_root / rel).read_bytes()
         text = data.decode("utf-8", errors="replace")
@@ -249,6 +250,7 @@ def replay_migrations(ws: Workspace) -> DbSchema | None:
             stmts = parse_sql(text)
         except ParseError:
             recorded.append(f"!{rel}")
+            unparsed.append(rel)
             continue
         recorded.append(rel)
         # pglast stmt_location/stmt_len are character offsets into the str
@@ -270,6 +272,7 @@ def replay_migrations(ws: Workspace) -> DbSchema | None:
         buckets=state.buckets,
         storage_policies=state.storage_policies,
         migration_files=recorded,
+        unparsed_migrations=unparsed,
     )
 
 

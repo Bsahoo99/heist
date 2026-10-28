@@ -58,6 +58,8 @@ class DbSchema(BaseModel):
     buckets: dict[str, Bucket]
     storage_policies: list[Policy]
     migration_files: list[str]
+    # Migration files pglast could not parse, skipped during replay.
+    unparsed_migrations: list[str] = Field(default_factory=list)
 
 
 class Node(BaseModel):

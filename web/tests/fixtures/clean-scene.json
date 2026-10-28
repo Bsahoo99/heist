@@ -1,0 +1,166 @@
+{
+  "version": 1,
+  "zones": [
+    {
+      "id": "street",
+      "active": true,
+      "items": [
+        {
+          "node_id": "visitor",
+          "label": "Visitor",
+          "kind": "visitor",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "shop_window",
+      "active": true,
+      "items": [
+        {
+          "node_id": "env:.env",
+          "label": ".env",
+          "kind": "env_file",
+          "flagged": false
+        },
+        {
+          "node_id": "page:src/pages/Pets.tsx",
+          "label": "Pets.tsx",
+          "kind": "page",
+          "flagged": false
+        },
+        {
+          "node_id": "page:src/pages/Requests.tsx",
+          "label": "Requests.tsx",
+          "kind": "page",
+          "flagged": false
+        },
+        {
+          "node_id": "page:src/pages/Upload.tsx",
+          "label": "Upload.tsx",
+          "kind": "page",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "guard_desk",
+      "active": true,
+      "items": [
+        {
+          "node_id": "auth:supabase",
+          "label": "Supabase Auth",
+          "kind": "auth",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "side_doors",
+      "active": true,
+      "items": [
+        {
+          "node_id": "fn:ai-describe",
+          "label": "ai-describe",
+          "kind": "function",
+          "flagged": false
+        },
+        {
+          "node_id": "fn:send-email",
+          "label": "send-email",
+          "kind": "function",
+          "flagged": false
+        },
+        {
+          "node_id": "fn:update-request",
+          "label": "update-request",
+          "kind": "function",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "vault",
+      "active": true,
+      "items": [
+        {
+          "node_id": "table:adoption_requests",
+          "label": "adoption_requests",
+          "kind": "table",
+          "flagged": false
+        },
+        {
+          "node_id": "table:messages",
+          "label": "messages",
+          "kind": "table",
+          "flagged": false
+        },
+        {
+          "node_id": "table:notes",
+          "label": "notes",
+          "kind": "table",
+          "flagged": false
+        },
+        {
+          "node_id": "table:pets",
+          "label": "pets",
+          "kind": "table",
+          "flagged": false
+        },
+        {
+          "node_id": "table:profiles",
+          "label": "profiles",
+          "kind": "table",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "warehouse",
+      "active": true,
+      "items": [
+        {
+          "node_id": "bucket:id-documents",
+          "label": "id-documents",
+          "kind": "bucket",
+          "flagged": false
+        },
+        {
+          "node_id": "bucket:pet-photos",
+          "label": "pet-photos",
+          "kind": "bucket",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "across_road",
+      "active": true,
+      "items": [
+        {
+          "node_id": "ext:api.openai.com",
+          "label": "api.openai.com",
+          "kind": "external_api",
+          "flagged": false
+        },
+        {
+          "node_id": "ext:api.resend.com",
+          "label": "api.resend.com",
+          "kind": "external_api",
+          "flagged": false
+        }
+      ]
+    }
+  ],
+  "findings": [],
+  "meta": {
+    "repo": "clean_app",
+    "commit_sha": "local",
+    "analyzed_at": "2026-10-26T00:00:00Z",
+    "stack": "vite_supabase",
+    "models": {},
+    "has_db_rules": true,
+    "unparsed_migrations": [],
+    "checks_held": 7
+  }
+}

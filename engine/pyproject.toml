@@ -18,6 +18,9 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.scripts]
+heist = "heist.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -122,6 +122,11 @@ def test_unparseable_migration_recorded(tmp_path):
     db = _db(load_workspace(tmp_path))
     assert "a" in db.tables
     assert db.migration_files == ["supabase/migrations/001.sql", "!supabase/migrations/002.sql"]
+    assert db.unparsed_migrations == ["supabase/migrations/002.sql"]
+
+
+def test_parsed_migrations_leave_unparsed_empty(vuln_app_path):
+    assert _db(load_workspace(vuln_app_path)).unparsed_migrations == []
 
 
 def test_storage_objects_policies_and_bucket_column_order(tmp_path):
