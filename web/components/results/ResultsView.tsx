@@ -6,7 +6,7 @@ import { ZONES } from "@/components/map/layout";
 import { FindingsList, SEVERITY_LABEL, StatusBadge } from "@/components/panels/FindingsList";
 import { ProofRows } from "@/components/panels/ProofRows";
 import { StepPanel } from "@/components/panels/StepPanel";
-import { Replay } from "@/components/replay/Replay";
+import { Legend, Replay } from "@/components/replay/Replay";
 import { StepPlayer } from "@/components/replay/StepPlayer";
 import { useReplayClock } from "@/components/replay/useReplayClock";
 import { buildTimeline, playerSteps } from "@/lib/timeline";
@@ -15,7 +15,7 @@ export type ResultsLayout = "normal" | "video";
 
 /** Nominal size (px) of the map box in each layout at 1280x720, for the steady wide frame. */
 const WIDE_BOX: Record<ResultsLayout, { width: number; height: number }> = {
-  normal: { width: 892, height: 446 },
+  normal: { width: 892, height: 438 },
   video: { width: 1248, height: 540 },
 };
 
@@ -62,6 +62,8 @@ function FindingStage({
               <StatusBadge status={finding.status} />
             </div>
             <h2 className="results-title">{finding.title}</h2>
+            {/* The recording layout keeps the caption to the story alone, so the key moves up here. */}
+            {layout === "video" && <Legend />}
           </>
         ) : (
           <>

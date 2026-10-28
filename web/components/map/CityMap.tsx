@@ -48,7 +48,10 @@ export type CityMapProps = {
    * steady frame on the finding). "Show whole map" on a phone still shows
    * the whole block.
    */
-  wideFrame?: ViewBox;
+  wideFrame?: ViewBox & {
+    /** Items the frame would cut in half: left out of the wide drawing, with their labels. */
+    hidden?: string[];
+  };
 };
 
 export type FocusFrame = {
@@ -227,6 +230,7 @@ export function CityMap({
   wideFrame,
 }: CityMapProps) {
   const placed = placeItems(scene);
+  const wideHidden = new Set(wideFrame?.hidden ?? []);
   const flaggedCount = placed.filter((p) => p.item.flagged).length;
   const ghostRoute = ghost ? routePath(ghost, scene) : undefined;
   const attackRoute = attack ? routePath(attack, scene) : undefined;
@@ -261,8 +265,11 @@ export function CityMap({
         <div className="citymap-wide">
           <MapSvg
             {...common}
+            placed={placed.filter((p) => !wideHidden.has(p.item.node_id))}
             viewBox={wideFrame}
-            labels={layoutLabels(placed).filter((l) => insideView(wideFrame, l.rect))}
+            labels={layoutLabels(placed).filter(
+              (l) => !wideHidden.has(l.nodeId) && insideView(wideFrame, l.rect),
+            )}
             titles={zoneTitles().filter((t) => insideView(wideFrame, t.rect))}
             idPrefix={`${idPrefix}-wide`}
             testIds={false}

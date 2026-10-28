@@ -312,11 +312,15 @@ body {
   /* Size to the map, so cards placed after it on phones stay inside the box. */
   height: auto;
 }
-.replay-map .citymap-full .citymap-svg,
-.replay-map .citymap-wide .citymap-svg {
+.replay-map .citymap-full .citymap-svg {
   height: auto;
-  /* Room above and below for the dev bar, header, caption and player at 720 px tall. */
   max-height: calc(100dvh - 282px);
+  min-height: 280px;
+}
+/* The wide map box takes the room the viewport leaves (for the dev bar,
+   header, caption and player); Replay measures it and shapes the frame to it. */
+.replay-map .citymap-wide .citymap-svg {
+  height: calc(100dvh - 282px);
   min-height: 280px;
 }
 .replay-map .citymap-focus .citymap-svg {
@@ -862,7 +866,8 @@ body {
 }
 
 /* Recording layout (?video=1): one column, the map as large as the viewport
-   allows (100dvh minus 180 px for the header line, caption and player), and a
+   allows (100dvh minus 186 px for the header line, a two-line caption and the
+   player), and a
    caption big enough to read in a video. */
 .results[data-layout="video"] {
   max-width: none;
@@ -893,11 +898,20 @@ body {
 }
 .results[data-layout="video"] .replay-map .citymap-wide .citymap-svg,
 .results[data-layout="video"] .replay-map .citymap-full .citymap-svg {
-  height: calc(100dvh - 180px);
+  height: calc(100dvh - 186px);
   max-height: none;
 }
 .results[data-layout="video"] .replay-caption {
   min-height: 0;
+}
+/* The player already names the phase and the header carries the key: the
+   caption is the story alone, so a two-line story still fits. */
+.results[data-layout="video"] .replay-caption-row {
+  display: none;
+}
+.results[data-layout="video"] .replay-legend {
+  flex: none;
+  margin-left: auto;
 }
 .results[data-layout="video"] .replay-caption-story {
   margin-top: 2px;

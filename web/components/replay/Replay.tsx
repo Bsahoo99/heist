@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { motion, useReducedMotion, useTransform, type MotionValue } from "motion/react";
 import type { Scene, SceneFinding } from "@/lib/scene.gen";
 import { CityMap } from "@/components/map/CityMap";
@@ -15,8 +15,40 @@ import { useReplayClock, type ReplayClock } from "./useReplayClock";
 /** Largest size multiplier for "Lock held" markers on the narrow map, so they stay near their door. */
 const PHONE_MARKER_SCALE = 1.4;
 
-/** Nominal size (px) of the wide map box in the normal results layout at 1280x720. */
-export const WIDE_BOX = { width: 892, height: 446 };
+/** Wait this long after the map box stops resizing before reframing, so a window drag never jitters the camera. */
+const RESIZE_SETTLE_MS = 150;
+
+/**
+ * The size (px) of the wide map box, measured. Starts from `initial` (also
+ * what the server renders) and follows the box once it settles after a resize.
+ */
+function useWideBox(ref: RefObject<HTMLDivElement | null>, initial: { width: number; height: number }) {
+  const [box, setBox] = useState(initial);
+  useEffect(() => {
+    const el = ref.current?.querySelector<HTMLElement>(".citymap-wide");
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let timer = 0;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      // Hidden (narrow screens): keep the last size.
+      if (!r || r.width < 1 || r.height < 1) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const next = { width: Math.round(r.width), height: Math.round(r.height) };
+        setBox((prev) => (prev.width === next.width && prev.height === next.height ? prev : next));
+      }, RESIZE_SETTLE_MS);
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      window.clearTimeout(timer);
+    };
+  }, [ref]);
+  return box;
+}
+
+/** Nominal size (px) of the wide map box in the normal results layout at 1280x720, before it is measured. */
+export const WIDE_BOX = { width: 892, height: 438 };
 
 /** Nominal size (px) of the proof card laid over the wide map. */
 const PROOF_CARD = { width: 380, height: 150 };
@@ -199,8 +231,8 @@ function PhaseKey({ phase }: { phase: ReplayView["phase"] }) {
   return <span className="phase-key phase-key-attack" aria-hidden="true" />;
 }
 
-/** The map key: which line is which. Shown for findings, beside the phase. */
-function Legend() {
+/** The map key: which line is which. Shown for findings, beside the phase (or in the recording layout's header). */
+export function Legend() {
   return (
     <ul className="replay-legend" aria-label="Map key">
       <li>
@@ -290,7 +322,7 @@ export function Replay({
   autoPlay?: boolean;
   clock?: ReplayClock;
   idPrefix?: string;
-  /** Nominal size (px) of the wide map box: the steady wide frame takes its shape. */
+  /** Size (px) of the wide map box before it is measured (first render and SSR). */
   wideBox?: { width: number; height: number };
 }) {
   const timeline = useMemo(() => buildTimeline(finding, scene), [finding, scene]);
@@ -319,14 +351,17 @@ export function Replay({
     const frame = cameraFrame(scene, view.camera.steps, view.camera.index, NARROW_SIZE, { ...opts, extra });
     return { focusFrame: frame, focusMarkers: spots };
   }, [scene, view.camera, view.markers]);
-  // Wide screens: one steady frame on the whole finding (or every door).
+  // Wide screens: one steady frame on the whole finding (or every door),
+  // shaped like the measured map box.
+  const mapRef = useRef<HTMLDivElement>(null);
+  const box = useWideBox(mapRef, wideBox);
   const wide = useMemo(() => {
     const extra =
       plan.kind === "clean"
         ? plan.markerAt.map((p) => ({ x: p.x - MARKER.w / 2, y: p.y - MARKER.h / 2, w: MARKER.w, h: MARKER.h }))
         : [];
-    return wideFrame(scene, finding, wideBox, { extra });
-  }, [scene, finding, plan, wideBox]);
+    return wideFrame(scene, finding, box, { extra });
+  }, [scene, finding, plan, box]);
   // Wide screens: lay the proof card over the corner that hides the least of the heist.
   const proofCorner = useMemo((): Corner => {
     if (finding?.status !== "proved") return "bottom-left";
@@ -340,15 +375,16 @@ export function Replay({
       ...placed.filter((p) => ids.has(p.item.node_id)).map((p) => boxRect(p.item.kind, p)),
       ...layoutLabels(placed).filter((l) => ids.has(l.nodeId)).map((l) => l.rect),
     ];
-    const share = { w: PROOF_CARD.width / wideBox.width, h: PROOF_CARD.height / wideBox.height };
+    const share = { w: Math.min(0.4, PROOF_CARD.width / box.width), h: PROOF_CARD.height / box.height };
     return pickCorner(wide, share, obstacles);
-  }, [scene, finding, wide, wideBox]);
+  }, [scene, finding, wide, box]);
   const playerCount = Math.max(1, clock.timeline.length - 1);
   const ended = view.phase === "end" && !clock.playing;
 
   return (
     <div className="replay" data-phase={view.phase}>
       <div
+        ref={mapRef}
         className="replay-map"
         role="group"
         tabIndex={0}

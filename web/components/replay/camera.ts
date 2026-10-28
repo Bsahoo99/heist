@@ -12,6 +12,7 @@ import {
   routePath,
   zoneRects,
   zoneTitles,
+  insideView,
   type Rect,
   type ViewBox,
 } from "@/components/map/layout";
@@ -128,20 +129,56 @@ export function cameraFrame(
 /** Wide screens never zoom in further than this many map px across. */
 export const WIDE_MIN_WIDTH = 900;
 
+/** Wide screens never draw the map larger than this many screen px per map px. */
+export const WIDE_MAX_SCALE = 1.2;
+
+/** How much (in width) the wide frame may grow to take in a box it would cut. */
+export const WIDE_GROW_LIMIT = 1.15;
+
+export type WideFrame = ViewBox & {
+  /** Items the frame would cut and could not take in: left out of the wide drawing, with their labels. */
+  hidden: string[];
+};
+
+const crossesEdge = (vb: ViewBox, r: Rect) =>
+  r.x < vb.x + vb.width && vb.x < r.x + r.w && r.y < vb.y + vb.height && vb.y < r.y + r.h && !insideView(vb, r);
+
+const asRect = (vb: ViewBox): Rect => ({ x: vb.x, y: vb.y, w: vb.width, h: vb.height });
+
+/**
+ * Everything drawn for an item: its box, the ground pool and highlight ring
+ * around a flagged or current item (up to 28 x 14 px from its ground point,
+ * see Zone.tsx), and a few px for the glow.
+ */
+function drawnRect(kind: string, p: { x: number; y: number }): Rect {
+  const b = boxRect(kind, p);
+  const x0 = Math.min(b.x, p.x - 28) - 4;
+  const y0 = Math.min(b.y, p.y - 14) - 4;
+  const x1 = Math.max(b.x + b.w, p.x + 28) + 4;
+  const y1 = Math.max(b.y + b.h, p.y + 14) + 4;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
 /**
  * The wide-screen frame: one steady frame for the whole replay (no per-step
- * camera, so a recording does not sway). It holds the finding's ghost and
- * attack routes, their items and labels, the titles of the zones they visit,
- * and the street with the visitor. With no finding (a clean app), it holds
- * the active doors from the guard desk to the warehouse. `extra`: more map
- * rects to hold (the clean app's "Lock held" markers).
+ * camera, so a recording does not sway), shaped like the map box `size`.
+ *
+ * For a finding it holds the ghost and attack routes, their items and
+ * labels, the titles of the zones they visit, the street with the visitor,
+ * and the whole zone of the attack's last stop (where the proof lands). With
+ * no finding (a clean app), it holds the active doors from the guard desk to
+ * the warehouse. `extra`: more map rects to hold (the clean app's markers).
+ *
+ * No item is ever drawn half in: a box the frame would cut is taken in by
+ * growing the frame when that keeps it within WIDE_GROW_LIMIT of its width,
+ * and is otherwise listed in `hidden`.
  */
 export function wideFrame(
   scene: Scene,
   finding: SceneFinding | null,
   size: { width: number; height: number },
   opts: { extra?: Rect[] } = {},
-): ViewBox {
+): WideFrame {
   const aspect = size.width / size.height;
   const placed = placeItems(scene);
   const labels = layoutLabels(placed);
@@ -157,18 +194,36 @@ export function wideFrame(
       rects.push(...r.points.map((p) => ({ x: p.x, y: p.y, w: 0, h: 0 })));
     }
     rects.push(...zoneRects("street"));
+    // The last stop's whole zone: the vault for an open table, where the proof lands.
+    const last = finding.attack_path.at(-1);
+    if (last) rects.push(...zoneRects(last.zone));
     for (const p of placed) if (p.item.kind === "visitor") ids.add(p.item.node_id);
   } else {
-    zones = new Set(
-      LOCK_ZONES.filter((id) => scene.zones.find((z) => z.id === id)?.active),
-    );
+    zones = new Set(LOCK_ZONES.filter((id) => scene.zones.find((z) => z.id === id)?.active));
     ids = new Set(placed.filter((p) => zones.has(p.zone)).map((p) => p.item.node_id));
     for (const z of zones) rects.push(...zoneRects(z));
   }
   for (const p of placed) if (ids.has(p.item.node_id)) rects.push(boxRect(p.item.kind, p));
   rects.push(...labels.filter((l) => ids.has(l.nodeId)).map((l) => l.rect));
   rects.push(...titles.filter((t) => zones.has(t.zone)).map((t) => t.rect));
-  return fit(bbox(rects, VIEW_PAD), aspect, WIDE_MIN_WIDTH);
+
+  // Never zoom in past WIDE_MIN_WIDTH map px, nor past WIDE_MAX_SCALE on a big box.
+  const minWidth = Math.max(WIDE_MIN_WIDTH, size.width / WIDE_MAX_SCALE);
+  let vb = fit(bbox(rects, VIEW_PAD), aspect, minWidth);
+  const limit = vb.width * WIDE_GROW_LIMIT;
+  const hidden = new Set<string>();
+  const boxes = placed.filter((p) => !p.overflow).map((p) => ({ id: p.item.node_id, rect: drawnRect(p.item.kind, p) }));
+  // Taking one box in can bring another to the edge: repeat until nothing is cut.
+  for (let pass = 0; pass < boxes.length; pass++) {
+    const cut = boxes.find((b) => !hidden.has(b.id) && crossesEdge(vb, b.rect));
+    if (!cut) break;
+    const grown = fit(bbox([asRect(vb), cut.rect], VIEW_PAD), aspect, minWidth);
+    if (grown.width <= limit) vb = grown;
+    else hidden.add(cut.id);
+  }
+  // A later growth may have taken a hidden box in whole after all.
+  const still = boxes.filter((b) => hidden.has(b.id) && crossesEdge(vb, b.rect)).map((b) => b.id);
+  return { ...vb, hidden: still.sort() };
 }
 
 export type Corner = "bottom-left" | "top-right" | "top-left" | "bottom-right";

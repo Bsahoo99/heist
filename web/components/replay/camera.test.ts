@@ -247,3 +247,60 @@ describe("pickCorner", () => {
     expect(obstacles.some((o) => hit(r, { ...o, w: Math.max(o.w, 0.01), h: Math.max(o.h, 0.01) }))).toBe(false);
   });
 });
+
+describe("wideFrame edges", () => {
+  const crosses = (vb: { x: number; y: number; width: number; height: number }, r: { x: number; y: number; w: number; h: number }) => {
+    const overlaps = r.x < vb.x + vb.width && vb.x < r.x + r.w && r.y < vb.y + vb.height && vb.y < r.y + r.h;
+    return overlaps && !insideView(vb, r);
+  };
+
+  test("the m3 proved frame holds every vault box whole", async () => {
+    const { wideFrame } = await import("./camera");
+    const { provedFinding } = await import("@/tests/helpers/scenes");
+    for (const size of [{ width: 892, height: 438 }, { width: 1248, height: 540 }, { width: 1888, height: 900 }]) {
+      const vb = wideFrame(vulnScene, provedFinding, size);
+      for (const p of placed.filter((q) => q.zone === "vault" && !q.overflow)) {
+        expect(insideView(vb, boxRect(p.item.kind, p))).toBe(true);
+      }
+    }
+  });
+
+  test("no drawn item box crosses the frame edge, for any finding or the clean scene", async () => {
+    const { wideFrame } = await import("./camera");
+    const { provedFinding } = await import("@/tests/helpers/scenes");
+    const cases = [
+      ...vulnScene.findings.map((f) => [vulnScene, f] as const),
+      [vulnScene, provedFinding] as const,
+      [cleanScene, null] as const,
+    ];
+    for (const size of [{ width: 892, height: 438 }, { width: 1248, height: 540 }, { width: 1888, height: 900 }, { width: 992, height: 590 }]) {
+      for (const [scene, f] of cases) {
+        const vb = wideFrame(scene, f, size);
+        const hidden = new Set(vb.hidden);
+        for (const p of placeItems(scene).filter((q) => !q.overflow && !hidden.has(q.item.node_id))) {
+          expect(crosses(vb, boxRect(p.item.kind, p)), `${f?.id ?? "clean"} ${p.item.node_id} ${size.width}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  test("respects the given aspect", async () => {
+    const { wideFrame } = await import("./camera");
+    for (const size of [{ width: 1.68, height: 1 }, { width: 1.95, height: 1 }, { width: 2.09, height: 1 }, { width: 2.31, height: 1 }]) {
+      for (const f of [vulnScene.findings[0], vulnScene.findings[2], null]) {
+        const vb = wideFrame(f ? vulnScene : cleanScene, f, size);
+        expect(vb.width / vb.height).toBeCloseTo(size.width / size.height, 2);
+      }
+    }
+  });
+});
+
+describe("wideFrame on a big box", () => {
+  test("never draws the map past the maximum screen scale", async () => {
+    const { wideFrame, WIDE_MAX_SCALE } = await import("./camera");
+    const size = { width: 1886, height: 900 };
+    for (const f of vulnScene.findings) {
+      expect(size.width / wideFrame(vulnScene, f, size).width).toBeLessThanOrEqual(WIDE_MAX_SCALE + 1e-6);
+    }
+  });
+});
