@@ -148,6 +148,9 @@ _CONSONANT_RUN_RE = re.compile(r"[b-df-hj-np-tv-xz]{5,}")
 _UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
 )
+# A name that marks a UUID as a row or object id (id, petId, user_id, uuid). Outside SQL a
+# UUID is kept only next to one, since some API tokens (Postmark, Heroku) are UUIDs.
+_ID_NAME_RE = re.compile(r"\b(?:\w*(?:[_-]id|[a-z]Id|ID)s?|ids?|uuids?)\b|[a-z]Uuid")
 # A template literal made only of interpolations and separators: `${clientId}:${secret}`.
 _INTERPOLATIONS_RE = re.compile(r"(?:\$\{[\w$.]+\}[\s:._/@,|#-]*)+")
 # Words that name a secret only as the last word of a compound (smtpPass, SMTP_PASS, db_pw)
@@ -649,7 +652,8 @@ def _redact_source(rel: str, text: str, findings: list[Finding]) -> list[str]:
             line = _redact_tokens(line, FLAGGED_TOKEN_MIN_LEN, idents_ok=not strict)
         else:
             line, open_quote = _redact_named(line, code)
-            line = _redact_tokens(line, idents_ok=True, uuids_ok=True)
+            uuids_ok = rel.endswith(".sql") or _ID_NAME_RE.search(line) is not None
+            line = _redact_tokens(line, idents_ok=True, uuids_ok=uuids_ok)
             if open_quote is not None:
                 budget = WIDEN_MAX_LINES
         out.append(line)

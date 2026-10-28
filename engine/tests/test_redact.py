@@ -564,6 +564,17 @@ def test_uuids_stay_readable_except_where_secrets_live():
     assert UUID not in redact("supabase/config.toml", f"# {UUID}\n")
 
 
+def test_uuid_tokens_without_an_id_name_are_hidden():
+    for line in (f'const postmark = "{UUID}";\n', f"fetch(url, {{ token: '{UUID}' }})\n"):
+        assert UUID not in redact("src/a.ts", line)
+    for line in (
+        f'const petId = "{UUID}";\n',
+        f"where user_id = '{UUID}'\n",
+        f'const ids = ["{UUID}"];\n',
+    ):
+        assert redact("src/a.ts", line) == line
+
+
 def test_interpolation_only_template_literals_stay_readable():
     text = "const encode = btoa(`${clientId}:${clientSecret}`);\n"
     assert redact("src/a.ts", text) == text
