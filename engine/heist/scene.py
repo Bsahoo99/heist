@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime
 from typing import Any, Literal, get_args
@@ -19,6 +20,7 @@ MISTAKES = range(1, 8)
 HIDDEN_KINDS = {"policy", "client_call"}
 _STATUS_RANK = {"proved": 0, "confirmed": 1, "possible": 2}
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+_BUCKET_ID_RE = re.compile(r"bucket_id\s*=\s*'([^']+)'")
 
 
 class PathStep(BaseModel):
@@ -103,7 +105,8 @@ def _step_ref(step: StepOut, nodes: dict[str, Node]) -> CodeRef | None:
 class _Items:
     """Maps any graph node to the map item that stands for it.
 
-    A policy maps to its table, a client call to its page; other visible nodes map to
+    A table policy maps to its table, a storage policy to the bucket its expression names
+    (else the first bucket), a client call to its page; other visible nodes map to
     themselves. Failing that, the nearest item in the same zone (same file first) is used.
     """
 
@@ -114,8 +117,16 @@ class _Items:
             if n.kind not in HIDDEN_KINDS:
                 self.by_zone[n.zone].append(n)
         self.edges = g.edges
+        # Storage policy node id -> bucket node ids named in its using/check expression.
+        self.storage: dict[str, list[str]] = {}
+        for p in g.db.storage_policies if g.db else []:
+            named = _BUCKET_ID_RE.findall(f"{p.using or ''} {p.check or ''}")
+            self.storage[f"policy:{p.table}:{p.name}"] = [f"bucket:{b}" for b in named]
 
     def _candidates(self, node: Node) -> list[str]:
+        if node.id in self.storage:
+            buckets = [n.id for n in self.by_zone["warehouse"] if n.kind == "bucket"]
+            return [*self.storage[node.id], *buckets[:1]]
         if node.kind == "policy":
             return [f"table:{node.id.split(':', 2)[1]}"]
         if node.kind == "client_call":

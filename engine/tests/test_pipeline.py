@@ -11,13 +11,14 @@ from pydantic import BaseModel
 from heist import cli, pipeline
 from heist.cli import FIXTURE_TIME, main
 from heist.detect.run import run_detectors
-from heist.fetch import UnsupportedRepo, Workspace
+from heist.fetch import UnsupportedRepo, Workspace, detect_stack, load_workspace
+from heist.graph.build import build_app_graph
 from heist.llm.client import MetaClient, SpendTracker
 from heist.llm.templates import fallback_trace
 from heist.llm.triage import TriageOut
-from heist.models import AppGraph, DbSchema, Finding, TraceOut
+from heist.models import AppGraph, DbSchema, Finding, FixOut, StepOut, TraceOut
 from heist.pipeline import run_analysis
-from heist.scene import ProofRow, Scene
+from heist.scene import ProofRow, Scene, SceneMeta, build_scene
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -418,3 +419,55 @@ def test_cli_online_without_open_key_exits_1(vuln_app_path, tmp_path, monkeypatc
     assert main(["analyze", str(vuln_app_path), "--out", str(tmp_path / "s.json")]) == 1
     assert "Set OPEN_API_KEY in engine/.env or use --offline" in capsys.readouterr().err
     assert not (tmp_path / "s.json").exists()
+
+
+def test_storage_policy_maps_to_its_bucket(clean_app_path, tmp_copy):
+    root = tmp_copy(clean_app_path)
+    (root / "supabase/migrations/0004_odd.sql").write_text(
+        'create policy "odd_read" on storage.objects for select using (true);\n'
+    )
+    ws = load_workspace(root)
+    g = build_app_graph(ws, detect_stack(ws))
+    findings, traces = [], {}
+    for pid in ("policy:objects:pet_photos_read", "policy:objects:odd_read"):
+        node = g.node(pid)
+        assert node.zone == "warehouse" and node.ref is not None
+        f = Finding(
+            id=f"m4-{node.name}",
+            mistake=4,
+            severity="low",
+            status="possible",
+            title=node.name,
+            node_ids=[pid],
+            refs=[node.ref],
+            source="heist",
+        )
+        st = StepOut(
+            node_id=pid,
+            zone="warehouse",
+            file=node.ref.file,
+            line=node.ref.start_line,
+            data="files",
+            story="s",
+            why="w",
+            code="c",
+        )
+        fix = FixOut(explanation="e", diff="", prompt="p")
+        findings.append(f)
+        traces[f.id] = (TraceOut(ghost_path=[st], attack_path=[st], fix=fix), "fallback")
+    meta = SceneMeta(
+        repo="r",
+        commit_sha="local",
+        analyzed_at=FIXED_TIME,
+        stack="vite_supabase",
+        models={},
+        has_db_rules=True,
+        unparsed_migrations=[],
+        checks_held=0,
+    )
+    s = build_scene(g, findings, traces, {}, meta)
+    item = {f.id: f.attack_path[0].item_id for f in s.findings}
+    assert item == {"m4-pet_photos_read": "bucket:pet-photos", "m4-odd_read": "bucket:id-documents"}
+    _assert_steps_on_map(s)
+    flagged = {i.node_id for z in s.zones for i in z.items if i.flagged}
+    assert flagged == {"bucket:pet-photos", "bucket:id-documents"}

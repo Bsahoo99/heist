@@ -46,12 +46,13 @@ def build_app_graph(ws: Workspace, stack: Stack) -> AppGraph:
                     )
                 )
         for p in db.storage_policies:
+            # Policies on storage.objects guard files, so they sit with the buckets.
             derived.append(
                 Node(
                     id=f"policy:{p.table}:{p.name}",
                     kind="policy",
                     name=p.name,
-                    zone="vault",
+                    zone="warehouse",
                     ref=p.ref,
                 )
             )

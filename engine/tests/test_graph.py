@@ -166,3 +166,10 @@ def test_vuln_app_env_node(vuln_app_path):
     g = build_app_graph(load_workspace(vuln_app_path), "vite_supabase")
     n = g.node("env:.env")
     assert n.ref is not None and n.ref.end_line == 4
+
+
+def test_storage_policies_live_in_the_warehouse(clean_app_path):
+    g = build_app_graph(load_workspace(clean_app_path), "vite_supabase")
+    assert g.node("policy:objects:pet_photos_read").zone == "warehouse"
+    assert g.node("policy:objects:id_documents_insert_own").zone == "warehouse"
+    assert g.node("policy:pets:pets_select_own").zone == "vault"
