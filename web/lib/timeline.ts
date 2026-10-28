@@ -22,7 +22,7 @@ export const LOCK_ZONES: ZoneId[] = ["guard_desk", "side_doors", "vault", "wareh
 
 /** One stop the step player can show. Step events come first in the timeline, in this order. */
 export type ReplayStep = {
-  kind: "ghost" | "attack" | "lock-held";
+  kind: "ghost" | "attack" | "lock-held" | "proof";
   step: PathStep;
   /** Index within its path (or among the doors tried). */
   index: number;
@@ -92,6 +92,17 @@ export function replaySteps(finding: SceneFinding | null, scene: Scene): ReplayS
 }
 
 /**
+ * The player's steps: the path steps, then for a proved finding one more for
+ * the proof (shown on the attack's last stop). Player step i is timeline event i.
+ */
+export function playerSteps(finding: SceneFinding | null, scene: Scene): ReplayStep[] {
+  const steps = replaySteps(finding, scene);
+  const last = finding?.attack_path.at(-1);
+  if (finding?.status !== "proved" || !last) return steps;
+  return [...steps, { kind: "proof", step: last, index: 0 }];
+}
+
+/**
  * Build the timeline: the ghost (legitimate) route, then the attack, then the
  * proof for proved findings, then the end. With no finding, the attacker
  * tries each active door and every lock holds. Base durations are scaled
@@ -99,7 +110,9 @@ export function replaySteps(finding: SceneFinding | null, scene: Scene): ReplayS
  */
 export function buildTimeline(finding: SceneFinding | null, scene: Scene): TimelineEvent[] {
   const events: (Omit<TimelineEvent, "at"> & { kind: Exclude<TimelineEvent["kind"], "end"> })[] = [];
-  for (const s of replaySteps(finding, scene)) events.push({ kind: s.kind, stepIndex: s.index, zone: s.step.zone });
+  for (const s of replaySteps(finding, scene)) {
+    if (s.kind !== "proof") events.push({ kind: s.kind, stepIndex: s.index, zone: s.step.zone });
+  }
   if (finding?.status === "proved") {
     const last = finding.attack_path.at(-1);
     events.push({ kind: "proof", zone: last?.zone });

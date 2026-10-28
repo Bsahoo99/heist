@@ -43,6 +43,12 @@ export type CityMapProps = {
    * glide to each new one (the replay's step camera).
    */
   focusFrame?: FocusFrame;
+  /**
+   * Wide screens: show this frame instead of the whole block (the replay's
+   * steady frame on the finding). "Show whole map" on a phone still shows
+   * the whole block.
+   */
+  wideFrame?: ViewBox;
 };
 
 export type FocusFrame = {
@@ -218,6 +224,7 @@ export function CityMap({
   idPrefix = "citymap",
   overlay,
   focusFrame,
+  wideFrame,
 }: CityMapProps) {
   const placed = placeItems(scene);
   const flaggedCount = placed.filter((p) => p.item.flagged).length;
@@ -250,6 +257,19 @@ export function CityMap({
           animated={Boolean(focusFrame)}
         />
       </div>
+      {wideFrame && (
+        <div className="citymap-wide">
+          <MapSvg
+            {...common}
+            viewBox={wideFrame}
+            labels={layoutLabels(placed).filter((l) => insideView(wideFrame, l.rect))}
+            titles={zoneTitles().filter((t) => insideView(wideFrame, t.rect))}
+            idPrefix={`${idPrefix}-wide`}
+            testIds={false}
+            overlay={overlay?.({ labelScale: 1, focus: false })}
+          />
+        </div>
+      )}
       <div className="citymap-full">
         <MapSvg
           {...common}

@@ -7,15 +7,16 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CityMap } from "@/components/map/CityMap";
 import type { Scene, SceneFinding } from "@/lib/scene.gen";
-import vulnJson from "@/tests/fixtures/vuln-scene.json";
-import cleanJson from "@/tests/fixtures/clean-scene.json";
 
 export const metadata: Metadata = { title: "City map (dev preview)" };
 
-const SCENES: Record<string, Scene> = {
-  vuln: vulnJson as unknown as Scene,
-  clean: cleanJson as unknown as Scene,
-};
+const SCENE_KEYS = ["vuln", "clean"] as const;
+
+/** Loaded only after the production 404, so production bundles leave the fixtures out. */
+async function loadScene(key: (typeof SCENE_KEYS)[number]): Promise<Scene> {
+  const json = key === "clean" ? await import("@/tests/fixtures/clean-scene.json") : await import("@/tests/fixtures/vuln-scene.json");
+  return json.default as unknown as Scene;
+}
 
 const SEVERITY_RANK: Record<SceneFinding["severity"], number> = {
   critical: 0,
@@ -46,7 +47,7 @@ export default function DevMapPage({ searchParams }: { searchParams: SearchParam
 async function DevMap({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
   const sceneKey = one(params.scene) === "clean" ? "clean" : "vuln";
-  const scene = SCENES[sceneKey];
+  const scene = await loadScene(sceneKey);
   const findingId = one(params.finding);
   const finding = scene.findings.find((f) => f.id === findingId) ?? worstFinding(scene);
   const progressParam = Number(one(params.progress));
@@ -59,7 +60,7 @@ async function DevMap({ searchParams }: { searchParams: SearchParams }) {
           Dev preview
         </span>
         <nav className="flex gap-1" aria-label="Fixture">
-          {Object.keys(SCENES).map((key) => (
+          {SCENE_KEYS.map((key) => (
             <Link
               key={key}
               href={`/dev/map?scene=${key}`}

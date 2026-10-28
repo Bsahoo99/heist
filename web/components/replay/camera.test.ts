@@ -154,3 +154,96 @@ describe("cameraFrame labels and titles", () => {
     }
   });
 });
+
+describe("wideFrame", () => {
+  const WIDE = { width: 2, height: 1 };
+
+  test("frames every ghost and attack stop plus the street, steady for the whole finding", async () => {
+    const { wideFrame, WIDE_MIN_WIDTH } = await import("./camera");
+    for (const f of vulnScene.findings) {
+      const vb = wideFrame(vulnScene, f, WIDE);
+      for (const s of [...f.ghost_path, ...f.attack_path]) {
+        if (placed.some((p) => p.item.node_id === s.item_id)) expect(insideView(vb, box(s.item_id))).toBe(true);
+      }
+      const z = ZONES.street;
+      for (const c of [isoToScreen(z.origin[0], z.origin[1]), isoToScreen(z.origin[0] + z.size[0], z.origin[1] + z.size[1])]) {
+        expect(insideView(vb, { x: c.x, y: c.y, w: 0, h: 0 })).toBe(true);
+      }
+      expect(vb.width).toBeGreaterThanOrEqual(WIDE_MIN_WIDTH);
+      expect(vb.width / vb.height).toBeCloseTo(2, 2);
+    }
+  });
+
+  test("a short route zooms in on the block", async () => {
+    const { wideFrame } = await import("./camera");
+    expect(wideFrame(vulnScene, finding("m1-vite-openai-api-key"), WIDE).width).toBeLessThan(VIEWBOX.width * 0.75);
+  });
+
+  test("labels of the route's items fit inside", async () => {
+    const { wideFrame } = await import("./camera");
+    const { layoutLabels } = await import("@/components/map/layout");
+    for (const f of vulnScene.findings) {
+      const vb = wideFrame(vulnScene, f, WIDE);
+      const ids = new Set([...f.ghost_path, ...f.attack_path].map((s) => s.item_id));
+      for (const l of layoutLabels(placed).filter((l) => ids.has(l.nodeId))) expect(insideView(vb, l.rect)).toBe(true);
+    }
+  });
+
+  test("clean app: the active doors, guard desk to warehouse, and extra rects", async () => {
+    const { wideFrame } = await import("./camera");
+    const extra = { x: 1000, y: -300, w: 10, h: 10 };
+    const vb = wideFrame(cleanScene, null, WIDE, { extra: [extra] });
+    for (const id of ["guard_desk", "side_doors", "vault", "warehouse"] as const) {
+      const z = ZONES[id];
+      for (const c of [isoToScreen(z.origin[0], z.origin[1]), isoToScreen(z.origin[0] + z.size[0], z.origin[1] + z.size[1])]) {
+        expect(insideView(vb, { x: c.x, y: c.y, w: 0, h: 0 })).toBe(true);
+      }
+    }
+    expect(insideView(vb, extra)).toBe(true);
+  });
+
+  test("deterministic", async () => {
+    const { wideFrame } = await import("./camera");
+    const f = finding("m3-messages");
+    expect(wideFrame(vulnScene, f, WIDE)).toEqual(wideFrame(vulnScene, f, WIDE));
+  });
+});
+
+describe("pickCorner", () => {
+  const vb = { x: 0, y: 0, width: 1000, height: 500 };
+  const card = { w: 0.4, h: 0.3 };
+
+  test("takes the first free corner, bottom-left first", async () => {
+    const { pickCorner } = await import("./camera");
+    expect(pickCorner(vb, card, [])).toBe("bottom-left");
+    expect(pickCorner(vb, card, [{ x: 50, y: 450, w: 10, h: 10 }])).toBe("top-right");
+  });
+
+  test("with no free corner, the one covering the least", async () => {
+    const { pickCorner } = await import("./camera");
+    const everywhere = [
+      { x: 30, y: 30, w: 10, h: 10 },
+      { x: 50, y: 60, w: 10, h: 10 },
+      { x: 900, y: 30, w: 10, h: 10 },
+      { x: 30, y: 450, w: 10, h: 10 },
+      { x: 40, y: 440, w: 10, h: 10 },
+      { x: 900, y: 450, w: 10, h: 10 },
+    ];
+    expect(pickCorner(vb, card, everywhere)).toBe("top-right");
+  });
+
+  test("the proof card on the wide frame stays off the route and the vault box", async () => {
+    const { pickCorner, wideFrame, cornerRect } = await import("./camera");
+    const { provedFinding } = await import("@/tests/helpers/scenes");
+    const f = provedFinding;
+    const frame = wideFrame(vulnScene, f, { width: 2, height: 1 });
+    const route = [routePath(f.ghost_path, vulnScene), routePath(f.attack_path, vulnScene)].flatMap((r) =>
+      r.points.map((p) => ({ x: p.x, y: p.y, w: 0, h: 0 })),
+    );
+    const obstacles = [...route, box(f.attack_path.at(-1)!.item_id)];
+    const corner = pickCorner(frame, { w: 0.43, h: 0.34 }, obstacles);
+    const r = cornerRect(frame, { w: 0.43, h: 0.34 }, corner);
+    const hit = (a: typeof r, b: typeof r) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    expect(obstacles.some((o) => hit(r, { ...o, w: Math.max(o.w, 0.01), h: Math.max(o.h, 0.01) }))).toBe(false);
+  });
+});

@@ -138,8 +138,10 @@ export type Sprite = {
 
 export type ReplayView = {
   phase: TimelineEvent["kind"];
-  /** The step the player and panel show. */
+  /** The path step the caption and panel show. */
   stepIndex: number;
+  /** The step player's position: path steps, then the proof for a proved finding. */
+  playerIndex: number;
   ghost?: PathStep[];
   attack?: PathStep[];
   /** How much of the attack line CityMap draws (the current leg is drawn by the sprite). */
@@ -178,6 +180,8 @@ export function replayView(
   const next = timeline[i + 1];
   const walkMs = next ? Math.round((next.at - ev.at) * WALK_SHARE) : 0;
   const stepIndex = Math.min(i, stepEventCount(timeline) - 1);
+  // Every event but the end is a player step.
+  const playerIndex = Math.min(i, Math.max(0, timeline.length - 2));
   const current = plan.steps[Math.max(0, stepIndex)]?.step;
   const highlight = current ? { nodeId: current.item_id, zone: current.zone } : undefined;
 
@@ -198,6 +202,7 @@ export function replayView(
     return {
       phase: ev.kind,
       stepIndex,
+      playerIndex,
       progress: 0,
       sprite: { kind: "attack", trail: false, leg, start: ev.at, walkMs: leg.length > 1 ? walkMs : 0 },
       highlight: walking ? highlight : undefined,
@@ -217,6 +222,7 @@ export function replayView(
     return {
       phase: "ghost",
       stepIndex,
+      playerIndex,
       ghost: shown.length ? shown : undefined,
       progress: 0,
       sprite: { kind: "ghost", trail: true, leg, start: ev.at, walkMs: leg.length > 1 ? walkMs : 0 },
@@ -233,6 +239,7 @@ export function replayView(
     return {
       phase: "attack",
       stepIndex,
+      playerIndex,
       ghost: finding.ghost_path,
       attack: finding.attack_path,
       progress: drawnTo < 0 ? 0 : stopFraction(plan.attackRoute, A, drawnTo),
@@ -248,6 +255,7 @@ export function replayView(
   return {
     phase: ev.kind,
     stepIndex,
+    playerIndex,
     ghost: finding.ghost_path,
     attack: finding.attack_path,
     progress: 1,

@@ -9,7 +9,15 @@ import { StepPanel } from "@/components/panels/StepPanel";
 import { Replay } from "@/components/replay/Replay";
 import { StepPlayer } from "@/components/replay/StepPlayer";
 import { useReplayClock } from "@/components/replay/useReplayClock";
-import { buildTimeline, replaySteps, stepEventCount } from "@/lib/timeline";
+import { buildTimeline, playerSteps } from "@/lib/timeline";
+
+export type ResultsLayout = "normal" | "video";
+
+/** Nominal size (px) of the map box in each layout at 1280x720, for the steady wide frame. */
+const WIDE_BOX: Record<ResultsLayout, { width: number; height: number }> = {
+  normal: { width: 892, height: 446 },
+  video: { width: 1248, height: 540 },
+};
 
 function itemLabel(scene: Scene, id: string): string | undefined {
   for (const z of scene.zones) {
@@ -24,16 +32,20 @@ function FindingStage({
   scene,
   finding,
   autoPlay,
+  layout,
 }: {
   scene: Scene;
   finding: SceneFinding | null;
   autoPlay: boolean;
+  layout: ResultsLayout;
 }) {
   const timeline = useMemo(() => buildTimeline(finding, scene), [finding, scene]);
-  const steps = useMemo(() => replaySteps(finding, scene), [finding, scene]);
+  const steps = useMemo(() => playerSteps(finding, scene), [finding, scene]);
   const clock = useReplayClock(timeline, { autoPlay });
-  const index = Math.min(clock.eventIndex, stepEventCount(timeline) - 1);
-  const current = steps[Math.max(0, index)];
+  // Every event but the end is a player step; the end keeps the last one.
+  const index = Math.max(0, Math.min(clock.eventIndex, steps.length - 1));
+  const ended = timeline[clock.eventIndex]?.kind === "end" && !clock.playing;
+  const current = steps[index];
   const where = current
     ? [ZONES[current.step.zone].label, itemLabel(scene, current.step.item_id)].filter(Boolean).join(": ")
     : undefined;
@@ -57,44 +69,35 @@ function FindingStage({
             <p className="results-sub">Heist tried every door of {scene.meta.repo} and found no way in.</p>
           </>
         )}
-        {finding && (
-          <ul className="results-legend" aria-label="Map key">
-            <li>
-              <span className="phase-key phase-key-ghost" aria-hidden="true" />
-              Legitimate route
-            </li>
-            <li>
-              <span className="phase-key phase-key-attack" aria-hidden="true" />
-              Attack route
-            </li>
-          </ul>
-        )}
       </header>
 
       <section className="results-stage" aria-label="Replay">
-        <Replay scene={scene} finding={finding} clock={clock} />
+        <Replay scene={scene} finding={finding} clock={clock} wideBox={WIDE_BOX[layout]} />
         <StepPlayer
           steps={steps}
           index={index}
+          ended={ended}
           onIndex={clock.seek}
           playing={clock.playing}
           onPlayingChange={clock.setPlaying}
         />
       </section>
 
-      <div className="results-panel">
-        {current && <StepPanel step={current.step} heading={where} />}
-        {finding?.status === "proved" && finding.proof_rows.length > 0 && (
-          <section className="results-proof" aria-label="Proof">
-            <h3>Proof with fake data</h3>
-            <p>
-              Heist applied your migrations to a throwaway database, filled it with fake people, and asked for this
-              table as someone who should not see it.
-            </p>
-            <ProofRows rows={finding.proof_rows} />
-          </section>
-        )}
-      </div>
+      {layout === "normal" && (
+        <div className="results-panel">
+          {current && <StepPanel step={current.step} heading={where} />}
+          {finding?.status === "proved" && finding.proof_rows.length > 0 && (
+            <section className="results-proof" aria-label="Proof">
+              <h3>Proof with fake data</h3>
+              <p>
+                Heist applied your migrations to a throwaway database, filled it with fake people, and asked for this
+                table as someone who should not see it.
+              </p>
+              <ProofRows rows={finding.proof_rows} />
+            </section>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -103,15 +106,21 @@ function FindingStage({
  * The results layout: the replay of the selected finding (the worst one
  * first) with its step player and panel, and the list of every finding.
  * Map on top on phones, on the left on wide screens.
+ *
+ * `layout="video"` is for screen recordings: one column with the header line,
+ * the map as large as the viewport allows, the caption and the player; no
+ * side panel and no findings list.
  */
 export function ResultsView({
   scene,
   initialFindingId,
   autoPlay = true,
+  layout = "normal",
 }: {
   scene: Scene;
   initialFindingId?: string;
   autoPlay?: boolean;
+  layout?: ResultsLayout;
 }) {
   const initial = scene.findings.find((f) => f.id === initialFindingId) ?? scene.findings[0] ?? null;
   const [selected, setSelected] = useState<{ id: string | null; play: boolean }>({
@@ -131,14 +140,22 @@ export function ResultsView({
   };
 
   return (
-    <div className="results" ref={top}>
-      <FindingStage key={finding?.id ?? "clean"} scene={scene} finding={finding} autoPlay={selected.play} />
-      <section className="results-list" aria-labelledby="results-list-title">
-        <h2 id="results-list-title" className="results-list-title">
-          {scene.findings.length > 0 ? `All findings (${scene.findings.length})` : "Findings"}
-        </h2>
-        <FindingsList findings={scene.findings} selectedId={finding?.id ?? null} onSelect={onSelect} />
-      </section>
+    <div className="results" data-layout={layout} ref={top}>
+      <FindingStage
+        key={finding?.id ?? "clean"}
+        scene={scene}
+        finding={finding}
+        autoPlay={selected.play}
+        layout={layout}
+      />
+      {layout === "normal" && (
+        <section className="results-list" aria-labelledby="results-list-title">
+          <h2 id="results-list-title" className="results-list-title">
+            {scene.findings.length > 0 ? `All findings (${scene.findings.length})` : "Findings"}
+          </h2>
+          <FindingsList findings={scene.findings} selectedId={finding?.id ?? null} onSelect={onSelect} />
+        </section>
+      )}
     </div>
   );
 }

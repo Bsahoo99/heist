@@ -126,3 +126,22 @@ describe("arrivalTime", () => {
     expect(arrivalTime(t, t.length - 1)).toBe(t.at(-1)!.at);
   });
 });
+
+describe("playerSteps", () => {
+  test("proved findings get a final proof step the player can reach", async () => {
+    const { playerSteps } = await import("./timeline");
+    const steps = playerSteps(provedFinding, vulnScene);
+    const t = buildTimeline(provedFinding, vulnScene);
+    expect(steps).toHaveLength(t.length - 1);
+    expect(steps.at(-1)!.kind).toBe("proof");
+    expect(t[steps.length - 1].kind).toBe("proof");
+    expect(steps.at(-1)!.step).toBe(provedFinding.attack_path.at(-1));
+  });
+
+  test("other findings and clean apps: just the path steps", async () => {
+    const { playerSteps } = await import("./timeline");
+    const f = worst(vulnScene)!;
+    expect(playerSteps(f, vulnScene)).toEqual(replaySteps(f, vulnScene));
+    expect(playerSteps(null, cleanScene)).toEqual(replaySteps(null, cleanScene));
+  });
+});

@@ -78,3 +78,21 @@ describe("StepPlayer", () => {
     expect(screen.getByText(`Step 4 of ${steps.length}`)).toBeTruthy();
   });
 });
+
+describe("StepPlayer at the end", () => {
+  test("says the replay ended instead of naming a step", () => {
+    render(<StepPlayer steps={steps} index={steps.length - 1} ended onIndex={() => {}} playing={false} onPlayingChange={() => {}} />);
+    expect(screen.getByText("End of replay")).toBeTruthy();
+    expect(screen.queryByText(/Step \d+ of/)).toBeNull();
+    expect(screen.queryByText("How they get in")).toBeNull();
+  });
+
+  test("names the proof step", async () => {
+    const { playerSteps } = await import("@/lib/timeline");
+    const { provedFinding } = await import("@/tests/helpers/scenes");
+    const ps = playerSteps(provedFinding, vulnScene);
+    render(<StepPlayer steps={ps} index={ps.length - 1} onIndex={() => {}} playing={false} onPlayingChange={() => {}} />);
+    expect(screen.getByText("The proof")).toBeTruthy();
+    expect(screen.getByText(`Step ${ps.length} of ${ps.length}`)).toBeTruthy();
+  });
+});

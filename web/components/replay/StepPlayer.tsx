@@ -40,6 +40,7 @@ const KIND_LABEL: Record<ReplayStep["kind"], string> = {
   ghost: "How it should work",
   attack: "How they get in",
   "lock-held": "Testing the locks",
+  proof: "The proof",
 };
 
 /** Play, pause, step back and forward through a replay's steps. */
@@ -49,12 +50,15 @@ export function StepPlayer({
   onIndex,
   playing,
   onPlayingChange,
+  ended = false,
 }: {
   steps: ReplayStep[];
   index: number;
   onIndex: (i: number) => void;
   playing: boolean;
   onPlayingChange: (playing: boolean) => void;
+  /** The replay has finished: say so instead of naming the last step. */
+  ended?: boolean;
 }) {
   const count = steps.length;
   const controls = { index, count, playing, onIndex, onPlayingChange };
@@ -114,17 +118,23 @@ export function StepPlayer({
               type="button"
               tabIndex={-1}
               aria-label={`Go to step ${i + 1}`}
-              aria-current={i === index ? "step" : undefined}
+              aria-current={i === index && !ended ? "step" : undefined}
               data-kind={s.kind}
-              data-done={i < index}
+              data-done={i < index || ended}
               className="step-seg"
               onClick={() => onIndex(i)}
             />
           ))}
         </div>
         <p className="step-player-where" aria-live="polite">
-          <span>{`Step ${index + 1} of ${count}`}</span>
-          {current && <span className="step-player-kind">{KIND_LABEL[current.kind]}</span>}
+          {ended ? (
+            <span>End of replay</span>
+          ) : (
+            <>
+              <span>{`Step ${index + 1} of ${count}`}</span>
+              {current && <span className="step-player-kind">{KIND_LABEL[current.kind]}</span>}
+            </>
+          )}
         </p>
       </div>
     </div>

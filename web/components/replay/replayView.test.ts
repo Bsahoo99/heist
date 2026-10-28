@@ -143,3 +143,13 @@ describe("placeMarkers on a narrow map", () => {
     });
   });
 });
+
+describe("replayView playerIndex", () => {
+  test("lands on the proof step during the proof and stays there at the end", () => {
+    const p = makePlan(provedFinding, vulnScene);
+    const tp = buildTimeline(provedFinding, vulnScene);
+    expect(replayView(p, tp, tp.length - 2, false).playerIndex).toBe(tp.length - 2);
+    expect(replayView(p, tp, tp.length - 1, false).playerIndex).toBe(tp.length - 2);
+    expect(replayView(p, tp, 0, false).playerIndex).toBe(0);
+  });
+});

@@ -4,16 +4,22 @@ import { useMemo, type ReactNode } from "react";
 import { motion, useReducedMotion, useTransform, type MotionValue } from "motion/react";
 import type { Scene, SceneFinding } from "@/lib/scene.gen";
 import { CityMap } from "@/components/map/CityMap";
-import { partialPath, type Point } from "@/components/map/layout";
+import { boxRect, layoutLabels, partialPath, placeItems, routePath, type Point, type Rect } from "@/components/map/layout";
 import { ProofRows } from "@/components/panels/ProofRows";
 import { buildTimeline } from "@/lib/timeline";
-import { cameraFrame } from "./camera";
+import { cameraFrame, pickCorner, wideFrame, type Corner } from "./camera";
 import { MARKER, makePlan, placeMarkers, replayView, type ReplayView, type Sprite } from "./replayView";
 import { handleStepKeys } from "./StepPlayer";
 import { useReplayClock, type ReplayClock } from "./useReplayClock";
 
 /** Largest size multiplier for "Lock held" markers on the narrow map, so they stay near their door. */
 const PHONE_MARKER_SCALE = 1.4;
+
+/** Nominal size (px) of the wide map box in the normal results layout at 1280x720. */
+export const WIDE_BOX = { width: 892, height: 446 };
+
+/** Nominal size (px) of the proof card laid over the wide map. */
+const PROOF_CARD = { width: 380, height: 150 };
 
 /** The narrow map box the step camera frames for (px); the frame keeps this aspect ratio. */
 export const NARROW_SIZE = { width: 358, height: 300 };
@@ -193,49 +199,68 @@ function PhaseKey({ phase }: { phase: ReplayView["phase"] }) {
   return <span className="phase-key phase-key-attack" aria-hidden="true" />;
 }
 
+/** The map key: which line is which. Shown for findings, beside the phase. */
+function Legend() {
+  return (
+    <ul className="replay-legend" aria-label="Map key">
+      <li>
+        <span className="phase-key phase-key-ghost" aria-hidden="true" />
+        Legitimate route
+      </li>
+      <li>
+        <span className="phase-key phase-key-attack" aria-hidden="true" />
+        Attack route
+      </li>
+    </ul>
+  );
+}
+
 function Caption({ view, plan, finding }: { view: ReplayView; plan: ReturnType<typeof makePlan>; finding: SceneFinding | null }) {
   const step = plan.steps[view.stepIndex]?.step;
   if (view.phase === "proof" && finding) {
     return (
       <div className="replay-caption" aria-live="polite">
-        <p className="replay-caption-phase">
-          <PhaseKey phase="proof" />
-          {PHASE_TEXT.proof}
-        </p>
+        <div className="replay-caption-row">
+          <p className="replay-caption-phase">
+            <PhaseKey phase="proof" />
+            {PHASE_TEXT.proof}
+          </p>
+          <Legend />
+        </div>
         <p className="replay-caption-story">
-          We ran this on a throwaway copy of your database, filled with fake people. These rows came back.
+          We ran it on a throwaway copy filled with fake people. These rows came back.
         </p>
       </div>
     );
   }
-  const phase = view.phase === "end" ? (plan.steps[view.stepIndex]?.kind ?? "attack") : view.phase;
+  const last = plan.steps[view.stepIndex]?.kind ?? "attack";
+  const phase = view.phase === "end" ? (last === "proof" ? "attack" : last) : view.phase;
   return (
     <div className="replay-caption" aria-live="polite">
-      <p className="replay-caption-phase">
-        <PhaseKey phase={phase} />
-        {PHASE_TEXT[phase]}
-      </p>
+      <div className="replay-caption-row">
+        <p className="replay-caption-phase">
+          <PhaseKey phase={phase} />
+          {PHASE_TEXT[phase]}
+        </p>
+        {finding && <Legend />}
+      </div>
       <p className="replay-caption-story">{step?.story ?? ""}</p>
     </div>
   );
 }
 
+/** Shown in the caption's place once the replay is over, so it never covers the map. */
 function EndCard({ clean, onAgain }: { clean: boolean; onAgain: () => void }): ReactNode {
-  if (clean) {
-    return (
-      <div className="replay-end replay-end-clean" role="status">
-        <p className="replay-end-title">Heist failed. Your app held up against all 7 checks.</p>
-        <p className="replay-badge">Heist-tested: 7/7 locks held</p>
-        <button type="button" className="replay-again" onClick={onAgain}>
-          Watch again
-        </button>
-      </div>
-    );
-  }
   return (
-    <div className="replay-end" role="status">
-      <p className="replay-end-title">End of replay</p>
-      <p className="replay-end-text">Step through each stop with the player, or pick another finding.</p>
+    <div className={clean ? "replay-end replay-end-clean" : "replay-end"} role="status">
+      <p className="replay-end-title">
+        {clean ? "Heist failed. Your app held up against all 7 checks." : "End of replay"}
+      </p>
+      {clean ? (
+        <p className="replay-badge">Heist-tested: 7/7 locks held</p>
+      ) : (
+        <p className="replay-end-text">Step through each stop with the player, or pick another finding.</p>
+      )}
       <button type="button" className="replay-again" onClick={onAgain}>
         Watch again
       </button>
@@ -258,12 +283,15 @@ export function Replay({
   autoPlay = false,
   clock: external,
   idPrefix = "replay",
+  wideBox = WIDE_BOX,
 }: {
   scene: Scene;
   finding: SceneFinding | null;
   autoPlay?: boolean;
   clock?: ReplayClock;
   idPrefix?: string;
+  /** Nominal size (px) of the wide map box: the steady wide frame takes its shape. */
+  wideBox?: { width: number; height: number };
 }) {
   const timeline = useMemo(() => buildTimeline(finding, scene), [finding, scene]);
   const own = useReplayClock(timeline, { autoPlay: external ? false : autoPlay });
@@ -291,19 +319,44 @@ export function Replay({
     const frame = cameraFrame(scene, view.camera.steps, view.camera.index, NARROW_SIZE, { ...opts, extra });
     return { focusFrame: frame, focusMarkers: spots };
   }, [scene, view.camera, view.markers]);
-  const stepCount = plan.steps.length;
+  // Wide screens: one steady frame on the whole finding (or every door).
+  const wide = useMemo(() => {
+    const extra =
+      plan.kind === "clean"
+        ? plan.markerAt.map((p) => ({ x: p.x - MARKER.w / 2, y: p.y - MARKER.h / 2, w: MARKER.w, h: MARKER.h }))
+        : [];
+    return wideFrame(scene, finding, wideBox, { extra });
+  }, [scene, finding, plan, wideBox]);
+  // Wide screens: lay the proof card over the corner that hides the least of the heist.
+  const proofCorner = useMemo((): Corner => {
+    if (finding?.status !== "proved") return "bottom-left";
+    const placed = placeItems(scene);
+    const steps = [...finding.ghost_path, ...finding.attack_path];
+    const ids = new Set(steps.map((st) => st.item_id));
+    const obstacles: Rect[] = [
+      ...[routePath(finding.ghost_path, scene), routePath(finding.attack_path, scene)].flatMap((r) =>
+        r.points.map((p) => ({ x: p.x, y: p.y, w: 0, h: 0 })),
+      ),
+      ...placed.filter((p) => ids.has(p.item.node_id)).map((p) => boxRect(p.item.kind, p)),
+      ...layoutLabels(placed).filter((l) => ids.has(l.nodeId)).map((l) => l.rect),
+    ];
+    const share = { w: PROOF_CARD.width / wideBox.width, h: PROOF_CARD.height / wideBox.height };
+    return pickCorner(wide, share, obstacles);
+  }, [scene, finding, wide, wideBox]);
+  const playerCount = Math.max(1, clock.timeline.length - 1);
   const ended = view.phase === "end" && !clock.playing;
 
   return (
     <div className="replay" data-phase={view.phase}>
       <div
         className="replay-map"
+        role="group"
         tabIndex={0}
         aria-label="Heist replay. Left and Right arrows step, Space plays or pauses."
         onKeyDown={(e) =>
           handleStepKeys(e, {
-            index: view.stepIndex,
-            count: stepCount,
+            index: view.playerIndex,
+            count: playerCount,
             playing: clock.playing,
             onIndex: clock.seek,
             onPlayingChange: clock.setPlaying,
@@ -318,18 +371,22 @@ export function Replay({
           highlight={view.highlight}
           idPrefix={idPrefix}
           focusFrame={focusFrame}
+          wideFrame={wide}
           overlay={({ labelScale, focus }) => (
             <Overlay time={clock.time} view={view} scale={labelScale} focus={focus} focusMarkers={focusMarkers} />
           )}
         />
         {view.phase === "proof" && finding && (
-          <div className="replay-proof" data-testid="replay-proof">
+          <div className="replay-proof" data-testid="replay-proof" data-corner={proofCorner}>
             <ProofRows rows={finding.proof_rows} compact />
           </div>
         )}
-        {ended && <EndCard clean={plan.kind === "clean"} onAgain={() => clock.setPlaying(true)} />}
       </div>
-      <Caption view={view} plan={plan} finding={finding} />
+      {ended ? (
+        <EndCard clean={plan.kind === "clean"} onAgain={() => clock.setPlaying(true)} />
+      ) : (
+        <Caption view={view} plan={plan} finding={finding} />
+      )}
     </div>
   );
 }
