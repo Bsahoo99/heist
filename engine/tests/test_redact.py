@@ -441,3 +441,138 @@ def test_ordinary_key_words_do_not_flag_a_line():
         "const anonKey = 'sb_publishable_demo_value'\n"
     )
     assert redact("src/a.tsx", text) == text
+
+
+# --- fix round 4: identifiers, smtp passwords, uuids ----------------------------------
+
+SMTP_PW = "Hunter2pass9"
+LETTERS30 = "abcdefghijklmnopqrstuvwxyzabcd"
+UUID = "123e4567-e89b-12d3-a456-426614174000"
+
+# The reviewer's third script: (name, file, text, secret).
+R3_CASES = [
+    (
+        "nodemailer_pass",
+        "supabase/functions/m/index.ts",
+        f'auth: {{ user: "me@x.com", pass: "{SMTP_PW}" }}\n',
+        SMTP_PW,
+    ),
+    (
+        "smtp_pass_wrap",
+        "supabase/functions/m/index.ts",
+        (
+            'const transporter = createTransport({\n  auth: {\n    user: "me@x.com",\n'
+            f'    pass: "{SMTP_PW}",\n  }},\n}});\n'
+        ),
+        SMTP_PW,
+    ),
+    ("headers_set_wrap", "src/a.ts", f"headers.set('x-api-key',\n  '{SMTP_PW}');\n", SMTP_PW),
+    (
+        "call_wrap",
+        "src/a.ts",
+        f"const res = await fetchWithKey(\n  'Authorization',\n  '{SMTP_PW}',\n);\n",
+        SMTP_PW,
+    ),
+    (
+        "obj_auth_wrap",
+        "src/a.ts",
+        f'headers: {{ Authorization:\n  "Bearer {SMTP_PW}", }}\n',
+        SMTP_PW,
+    ),
+    (
+        "obj_auth_comma",
+        "src/a.ts",
+        f'headers: {{\n  "x-api-key": API,\n  "x-secret":\n    "{SMTP_PW}",\n}}\n',
+        SMTP_PW,
+    ),
+    ("array_pair", "src/a.ts", f"const pair = ['password',\n  '{SMTP_PW}'];\n", SMTP_PW),
+    ("letter_only_wrap", "src/a.ts", f"setApiKey(\n  '{LETTERS30}',\n);\n", LETTERS30),
+    (
+        "signin_wrap",
+        "src/a.ts",
+        f"await supabase.auth.signInWithPassword({{ email: 'a@b.c',\n  password: '{SMTP_PW}' }});\n",
+        SMTP_PW,
+    ),
+    (
+        "signin_args",
+        "src/a.ts",
+        f"login('admin@x.com', // password next\n  '{SMTP_PW}');\n",
+        SMTP_PW,
+    ),
+    ("smtp_env_name", "src/mail.ts", f"const SMTP_PASS = '{SMTP_PW}'\n", SMTP_PW),
+    ("db_pw", "src/db.ts", f"const db_pw = '{SMTP_PW}'\n", SMTP_PW),
+    ("lone_pw", "src/db.ts", f"connect({{ pw: '{SMTP_PW}' }})\n", SMTP_PW),
+]
+
+
+@pytest.mark.parametrize(("name", "rel", "text", "secret"), R3_CASES)
+def test_reviewer_third_leak_cases(name, rel, text, secret):
+    assert secret not in redact(rel, text), name
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "export const useAdoptionRequests2ForUserId = () => fetchPetPhotosV2ById(petId123);",
+        "const url = await createS3PresignedUploadUrl(bucket, path);",
+        "export async function handleOAuth2Callback(req: Request) {",
+        "const conn = getDbConnection2Strength(loadSupabaseClientV2Async());",
+    ],
+)
+def test_code_identifiers_with_digits_stay_readable(line):
+    assert redact("src/a.ts", line + "\n") == line + "\n"
+
+
+@pytest.mark.parametrize("key", [K24, JSON_KEY, "rk7GpQ2mXv9LtB4nYw8ZcK3s"])
+def test_keys_are_not_mistaken_for_identifiers(key):
+    for line in (f"const x = {key};", f"const x = '{key}';", f"Use {key} to sign in."):
+        assert key not in redact("src/a.ts", line + "\n"), line
+
+
+def test_random_keys_are_hidden_as_bare_tokens_and_always_in_strings():
+    import random
+    import string
+
+    rng = random.Random(4)
+    chars = string.ascii_letters + string.digits
+    keys = ["".join(rng.choice(chars) for _ in range(24)) for _ in range(2000)]
+    keys = [k for k in keys if any(ch.isdigit() for ch in k)]
+    bare = sum(k in redact("src/a.ts", f"const x = {k}\n") for k in keys)
+    assert bare <= len(keys) // 500, f"{bare} of {len(keys)} bare random keys kept"
+    assert not any(k in redact("src/a.ts", f"const x = '{k}'\n") for k in keys)
+
+
+def test_pass_is_a_whole_word_trigger():
+    kept = (
+        "import passport from 'passport'\n"
+        "const bypass = compass.heading\n"
+        "if ok:\n    pass\n"
+        "const passThroughValue = 'kept'\n"
+    )
+    assert redact("src/a.ts", kept) == kept
+    out = redact("src/a.ts", f"const smtpPass = '{SMTP_PW}'\n")
+    assert SMTP_PW not in out
+
+
+def test_uuids_stay_readable_except_where_secrets_live():
+    sql = f"insert into pets (id) values ('{UUID}');\n"
+    assert redact("supabase/migrations/1.sql", sql) == sql
+    ts = f'const id = "{UUID}";\n'
+    assert redact("src/a.ts", ts) == ts
+    assert UUID not in redact("src/a.ts", ts, [secret_at("src/a.ts", 1)])
+    assert UUID not in redact(".env", f"# {UUID}\nX={UUID}\n")
+    assert UUID not in redact("supabase/config.toml", f"# {UUID}\n")
+
+
+def test_interpolation_only_template_literals_stay_readable():
+    text = "const encode = btoa(`${clientId}:${clientSecret}`);\n"
+    assert redact("src/a.ts", text) == text
+    out = redact("src/a.ts", f"const encode = btoa(`${{clientId}}:{K24}`); // clientSecret\n")
+    assert K24 not in out
+
+
+def test_comma_carry_is_exactly_one_line():
+    text = "headers.set('x-api-key',\n  'short',\n  other,\n)\nconst ok = 'keep'\n"
+    out = redact("src/a.ts", text).splitlines()
+    assert out[1] == f"  '{REDACTED}',"
+    assert out[2:] == ["  other,", ")", "const ok = 'keep'"]

@@ -137,6 +137,23 @@ _SAFE_AUTH_LITERAL_RE = re.compile(
 )
 _AUTH_SCHEME_RE = re.compile(r"\b(Bearer|Basic)([ \t]+)(?!\$\{)[^\s'\"`<>]+")
 _DOCKER_ARG_RE = re.compile(r"^(\s*(?:ENV|ARG)\s+)(.*)$", re.IGNORECASE)
+# Code identifiers: letters, digits, _ and $, starting with a letter, _ or $.
+_CODE_IDENT_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+# Identifier words with digits kept on the word before them: OAuth2, S3, Requests2, V2.
+_IDENT_WORD_RE = re.compile(r"[A-Z]*[a-z]+\d*|[A-Z]+\d*(?![a-z])|\d+")
+# The letters of one identifier word: Word, word, an acronym (S, HTML) or OAuth.
+_IDENT_LETTERS_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]{1,5}|[A-Z]{2}[a-z]{2,}")
+_VOWEL_RE = re.compile(r"[aeiouy]")
+_CONSONANT_RUN_RE = re.compile(r"[b-df-hj-np-tv-xz]{5,}")
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
+# A template literal made only of interpolations and separators: `${clientId}:${secret}`.
+_INTERPOLATIONS_RE = re.compile(r"(?:\$\{[\w$.]+\}[\s:._/@,|#-]*)+")
+# Words that name a secret only as the last word of a compound (smtpPass, SMTP_PASS, db_pw)
+# or, on their own, when assigned or quoted. `passport`, `bypass`, `compass` are one word.
+_SHORT_SECRET_WORDS = ("key", "keys", "pass", "pw")
+_LITERAL_TEXT_RE = re.compile(r"""(['"`])((?:\\.|(?!\1)[^\\])*)\1""")
 _SECTION_RE = re.compile(r"\s*(?:\[\[?[^\]=]*\]\]?|---|\.\.\.)\s*")
 _CONTINUES_AFTER = ("+", ",", "(", "[", "{", "=", ":", "|", "&", "?", "\\", "-", "*", "/", "%")
 _CONTINUES_BEFORE = ("+", ".", "?", ":", "&&", "||", "-", "*", "/")
@@ -192,9 +209,70 @@ def _secret_part(part: str) -> bool:
     return len(part) >= SEGMENT_MIN_LEN and _mixed(part) and not _path_segment(part)
 
 
-def _token_hit(token: str, min_len: int | None) -> bool:
+def _pronounceable(words: list[str]) -> bool:
+    """Real words have vowels and no long consonant runs.
+
+    At most one odd word is allowed: an acronym (DB, S, OAuth), a lone digit run, or a short
+    word without a vowel (Db, Js). Random keys have several.
+    """
+    odd = 0
+    for w in words:
+        if not w or len(w) == 1 or w[:2].isupper():
+            odd += 1
+            continue
+        low = w.lower()
+        if not _VOWEL_RE.search(low):
+            if len(low) > 2:
+                return False
+            odd += 1
+        elif _CONSONANT_RUN_RE.search(low):
+            return False
+    return odd <= 1
+
+
+def _code_identifier(token: str) -> bool:
+    """A camelCase or snake_case name made of real words, like useAdoptionRequests2ForUserId.
+
+    Random keys split into short letter runs with digits everywhere, so they fail this.
+    """
+    if not _CODE_IDENT_RE.fullmatch(token):
+        return False
+    words = _IDENT_WORD_RE.findall(token)
+    if len(words) < 2:
+        return False
+    letters = [ch for ch in token if ch.isalpha()]
+    upper = sum(ch.isupper() for ch in letters)
+    if any(ch.islower() for ch in letters) and upper * 5 > len(letters) * 2:
+        return False  # random keys are about half upper case, real names mostly lower
+    if not all(_IDENT_LETTERS_RE.fullmatch(w.rstrip("0123456789") or "a") for w in words):
+        return False
+    if not _pronounceable([w.rstrip("0123456789") for w in words]):
+        return False
+    runs = [len(r) for w in words for r in re.findall(r"[A-Za-z]+", w)]
+    if not runs or sum(runs) / len(runs) < 3:
+        return False
+    with_digits = [w for w in words if any(ch.isdigit() for ch in w)]
+    if len(with_digits) * 3 > len(words):
+        return False
+    mixed_heavy = (
+        sum(ch.isdigit() for ch in w) > 2 and any(ch.isalpha() for ch in w) for w in words
+    )
+    return not any(mixed_heavy)
+
+
+def _token_hit(
+    token: str, min_len: int | None, *, idents_ok: bool = False, uuids_ok: bool = False
+) -> bool:
+    """Whether a token looks like a key. `min_len` hides shorter mixed tokens (flagged lines).
+
+    `idents_ok` keeps code identifiers made of real words; `uuids_ok` keeps canonical UUIDs.
+    """
     if _prefixed_key(token) or _long_run(token):
         return True
+    if uuids_ok and _UUID_RE.fullmatch(token):
+        return False
+    if idents_ok and _code_identifier(token):
+        return False
     if min_len is not None and len(token) >= min_len and _mixed(token):
         return True
     if "/" in token:
@@ -213,11 +291,22 @@ def _token_hit(token: str, min_len: int | None) -> bool:
     )
 
 
-def _redact_tokens(line: str, min_len: int | None = None) -> str:
-    def sub(m: re.Match[str]) -> str:
-        return REDACTED if _token_hit(m.group(0), min_len) else m.group(0)
+def _redact_tokens(
+    line: str, min_len: int | None = None, *, idents_ok: bool = False, uuids_ok: bool = False
+) -> str:
+    """Hide key-like tokens. `idents_ok` keeps code identifiers, but only outside string
+    literals: a key sits in a string far more often than a function name does.
+    """
+    line = _JWT_RE.sub(REDACTED, line)
+    quoted = [m.span() for m in _LITERAL_TEXT_RE.finditer(line)] if idents_ok else []
 
-    return _TOKEN_RE.sub(sub, _JWT_RE.sub(REDACTED, line))
+    def sub(m: re.Match[str]) -> str:
+        t = m.group(0)
+        in_string = any(a < m.start() < b for a, b in quoted)
+        hit = _token_hit(t, min_len, idents_ok=idents_ok and not in_string, uuids_ok=uuids_ok)
+        return REDACTED if hit else t
+
+    return _TOKEN_RE.sub(sub, line)
 
 
 # --- URLs -------------------------------------------------------------------------------
@@ -334,7 +423,7 @@ def _names_secret(ident: str) -> bool:
         return False
     if any(w in _LINE_SECRET_WORDS for w in words) or _LINE_SECRET_SUBSTR_RE.search(ident):
         return True
-    return len(words) > 1 and words[-1] in ("key", "keys")
+    return len(words) > 1 and words[-1] in _SHORT_SECRET_WORDS
 
 
 def _name_literal(content: str) -> bool:
@@ -343,7 +432,7 @@ def _name_literal(content: str) -> bool:
     Env var names (STRIPE_KEY, OPENAI_API_KEY), secret-like names (Authorization, x-api-key,
     stripe_key) and `Bearer ${variable}`. Never anything that looks like a key itself.
     """
-    if _SAFE_AUTH_LITERAL_RE.fullmatch(content):
+    if _SAFE_AUTH_LITERAL_RE.fullmatch(content) or _INTERPOLATIONS_RE.fullmatch(content):
         return True
     if _token_hit(content, FLAGGED_TOKEN_MIN_LEN):
         return False
@@ -361,7 +450,7 @@ def _line_names_secret(line: str) -> bool:
     """The line names a secret anywhere: as an identifier, in a string, or in a comment."""
     line = _SQL_KEY_RE.sub(" ", line)
     for m in _IDENT_RE.finditer(line):
-        if m.group(0).lower() in ("key", "keys"):
+        if m.group(0).lower() in _SHORT_SECRET_WORDS:
             if _bare_key_names_secret(line, m):
                 return True
         elif _names_secret(m.group(0)):
@@ -370,7 +459,8 @@ def _line_names_secret(line: str) -> bool:
 
 
 def _bare_key_names_secret(line: str, m: re.Match[str]) -> bool:
-    """A lone `key`: assigned (`key = `, `key:`), quoted ("keys"), or a <key> tag.
+    """A lone `key`, `pass` or `pw`: assigned (`key = `, `pass:`), quoted ("keys"), or a <key>
+    tag.
 
     Not a JSX `key={...}` prop, a `.keys()` call or a `keyof` type.
     """
@@ -383,6 +473,32 @@ def _bare_key_names_secret(line: str, m: re.Match[str]) -> bool:
     return (after.startswith(":") and not after.startswith("::")) or (
         after.startswith("=") and not after.startswith(("==", "={", "=>"))
     )
+
+
+def _short_secret_name(name: str) -> bool:
+    """`pass`, `smtpPass`, `SMTP_PASS`, `db_pw`: the name ends in the word pass or pw."""
+    words = [w.lower() for w in _WORD_RE.findall(name)]
+    return bool(words) and words[-1] in ("pass", "pw")
+
+
+def _code_part(line: str) -> tuple[str, str]:
+    """(code, trailing // or # comment). A rough split that ignores quotes."""
+    for mark in (" //", " #"):
+        at = line.find(mark)
+        if at != -1:
+            return line[:at], line[at:]
+    return line, ""
+
+
+def _value_follows(line: str) -> bool:
+    """A comma-ended line whose secret name is a quoted string or a comment, as in
+    `headers.set('x-api-key',` or `['password',`: the value is likely on the next line.
+    """
+    code, comment = _code_part(line)
+    if not code.rstrip().endswith(","):
+        return False
+    quoted = " ".join(m.group(2) for m in _LITERAL_TEXT_RE.finditer(code))
+    return _line_names_secret(quoted) or _line_names_secret(comment)
 
 
 def _public_value(name: str, value: str) -> bool:
@@ -409,7 +525,9 @@ def _redact_named(line: str, code: bool) -> tuple[str, str | None]:
         end = m.end()
         out.append(line[i:end])
         i = end
-        if not _SECRET_NAME_RE.search(m.group("name")) or end >= len(line):
+        name = m.group("name")
+        secret_name = _SECRET_NAME_RE.search(name) or _short_secret_name(name)
+        if not secret_name or end >= len(line):
             continue
         c = line[end]
         if c in QUOTES:
@@ -523,19 +641,22 @@ def _redact_source(rel: str, text: str, findings: list[Finding]) -> list[str]:
         elif not hide_next and open_quote is None:
             strict = False
         hidden = n in flagged or names or hide_next or open_quote is not None
+        one_more = names and not strict and _value_follows(line)
         line = _redact_urls(line)
         if hidden:
             line, open_quote = _redact_literals(line, open_quote, keep_names=not strict)
             line, _ = _redact_named(line, code)
-            line = _redact_tokens(line, FLAGGED_TOKEN_MIN_LEN)
+            line = _redact_tokens(line, FLAGGED_TOKEN_MIN_LEN, idents_ok=not strict)
         else:
             line, open_quote = _redact_named(line, code)
-            line = _redact_tokens(line)
+            line = _redact_tokens(line, idents_ok=True, uuids_ok=True)
             if open_quote is not None:
                 budget = WIDEN_MAX_LINES
         out.append(line)
         nxt = lines[n] if n < len(lines) else None
-        wants_more = open_quote is not None or (hidden and _continues(line, nxt, strict))
+        wants_more = (
+            open_quote is not None or one_more or (hidden and _continues(line, nxt, strict))
+        )
         hide_next = wants_more and budget > 0
         budget = budget - 1 if hide_next else 0
         if not hide_next:
