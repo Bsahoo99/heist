@@ -56,8 +56,13 @@ const LOCK_COPY: Record<string, { story: string; why: string; code: string; data
   },
 };
 
+/** Doors whose lock depends on the database rules (tables and storage), untested without them. */
+const RULE_ZONES: ZoneId[] = ["vault", "warehouse"];
+
 function activeLockZones(scene: Scene): ZoneId[] {
   return LOCK_ZONES.filter((id) => {
+    // Never show a lock holding that Heist could not test.
+    if (!scene.meta.has_db_rules && RULE_ZONES.includes(id)) return false;
     const z = scene.zones.find((zone) => zone.id === id);
     return Boolean(z?.active && z.items.length > 0);
   });

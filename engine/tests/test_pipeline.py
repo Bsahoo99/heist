@@ -20,6 +20,8 @@ from heist.models import AppGraph, DbSchema, Finding, FixOut, StepOut, TraceOut
 from heist.pipeline import run_analysis
 from heist.scene import ProofRow, Scene, SceneMeta, build_scene
 
+from .stub_repos import write_no_rules_app
+
 T = TypeVar("T", bound=BaseModel)
 
 REPO_ROOT = Path(__file__).parents[2]
@@ -102,6 +104,15 @@ def test_pipeline_without_rules(tmp_copy, vuln_app_path, fake_client):
     s = run_analysis(str(root), lambda e: None, fake_client)
     assert s.meta.has_db_rules is False
     assert s.meta.unparsed_migrations == []
+
+
+def test_no_rules_stub_keeps_the_code_findings(tmp_path):
+    """The e2e `no-rules-app` stub: rules unknown, the mistakes that need no rules still found."""
+    s = run_analysis(str(write_no_rules_app(tmp_path / "no_rules")), lambda e: None, None)
+    assert s.meta.has_db_rules is False
+    mistakes = {f.mistake for f in s.findings}
+    assert {1, 2} <= mistakes
+    assert not mistakes & {3, 4}
 
 
 def test_unsupported_repo_emits_error(tmp_path, fake_client):

@@ -42,6 +42,12 @@ describe("buildTimeline", () => {
     ]);
   });
 
+  test("clean app without database rules never claims the vault or warehouse locks", () => {
+    const scene = { ...fixtureScene(), meta: { ...fixtureScene().meta, has_db_rules: false } };
+    const t = buildTimeline(null, scene);
+    expect(t.filter((e) => e.kind === "lock-held").map((e) => e.zone)).toEqual(["guard_desk", "side_doors"]);
+  });
+
   test("clean app skips inactive doors", () => {
     const scene = fixtureScene({ side_doors: false, warehouse: false });
     const t = buildTimeline(null, scene);

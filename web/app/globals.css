@@ -210,18 +210,26 @@ body {
   max-width: 1560px;
   margin: 0 auto;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "head" "stage" "panel" "list";
+  grid-template-areas: "head" "stage" "panel" "fix" "list";
 }
 @media (min-width: 1024px) {
   .results {
     grid-template-columns: minmax(0, 1fr) 320px;
-    grid-template-rows: auto auto 1fr;
+    grid-template-rows: auto auto auto 1fr;
     grid-template-areas:
       "head head"
       "stage panel"
-      "stage list";
+      "stage list"
+      "fix list";
     column-gap: 20px;
   }
+}
+.results-fix {
+  grid-area: fix;
+  min-width: 0;
+}
+.results-fix:empty {
+  display: none;
 }
 
 .results :focus-visible {
@@ -425,6 +433,18 @@ body {
 }
 .replay-end-clean {
   border-color: var(--map-lamp);
+}
+.replay-end-words {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.replay-end-kicker {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--map-lamp);
 }
 .replay-end-title {
   font-size: 18px;
@@ -738,6 +758,151 @@ body {
     line-height: 20px;
     color: var(--map-muted);
   }
+}
+
+/* Fix, missing rules and badge cards */
+.fix-card,
+.rules-card,
+.badge-block {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 14px 16px 16px;
+}
+.fix-card h3,
+.rules-card h2,
+.badge-block h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.rules-card {
+  margin-bottom: 16px;
+  border-color: var(--map-lamp);
+}
+.badge-block {
+  border-color: var(--map-lamp);
+}
+.results-list .badge-block {
+  margin-bottom: 16px;
+}
+.fix-explanation,
+.rules-card > p {
+  max-width: 75ch;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--map-ink);
+}
+.fix-diff,
+.rules-sql,
+.badge-markdown,
+.fix-prompt {
+  margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--panel-edge);
+  background: var(--code-bg);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+/* Code never wraps: it scrolls sideways inside its box, never the page. */
+.fix-diff,
+.rules-sql {
+  overflow-x: auto;
+  white-space: pre;
+}
+.fix-diff {
+  padding: 8px 0;
+}
+.fix-diff-code {
+  display: grid;
+  min-width: 100%;
+  width: max-content;
+}
+.fix-diff-code > span {
+  padding: 0 12px;
+  color: var(--map-ink);
+}
+.fix-diff-code > [data-line="file"] {
+  color: var(--map-muted);
+}
+.fix-diff-code > [data-line="hunk"] {
+  color: var(--map-ghost);
+}
+.fix-diff-code > [data-line="add"] {
+  background: rgba(63, 185, 80, 0.16);
+  color: #b4f1bd;
+}
+.fix-diff-code > [data-line="del"] {
+  background: rgba(255, 77, 94, 0.16);
+  color: var(--map-flag-ink);
+}
+.rules-sql {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  color: var(--map-ink);
+}
+/* One long line: wrap it so the whole Markdown shows. */
+.badge-markdown {
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--map-ink);
+}
+.fix-prompt {
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+  color: var(--map-ink);
+}
+.badge-image {
+  display: block;
+  height: 20px;
+  width: auto;
+}
+.fix-actions,
+.rules-actions,
+.badge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.fix-hint,
+.rules-actions p {
+  flex: 1 1 160px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--map-zone-ink);
+}
+.copy-button {
+  flex: none;
+  min-width: 9.5em;
+  border-radius: 999px;
+  border: 1px solid var(--map-lamp);
+  background: var(--map-lamp);
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1d1405;
+  cursor: pointer;
+}
+.copy-button:hover {
+  background: #f7d48e;
+}
+.copy-button[data-state="copied"] {
+  background: transparent;
+  color: var(--map-lamp);
+}
+.copy-failed {
+  font-size: 13px;
+  color: var(--map-flag-ink);
 }
 
 /* Findings */

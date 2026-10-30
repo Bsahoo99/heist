@@ -32,6 +32,12 @@ def write_plain_vite_app(dest: Path) -> Path:
     return dest
 
 
+def write_no_rules_app(dest: Path) -> Path:
+    """The vuln app without `supabase/migrations`: Heist cannot see its database rules."""
+    shutil.copytree(FIXTURES_DIR / "vuln_app", dest, ignore=shutil.ignore_patterns("migrations"))
+    return dest
+
+
 def make_stub_clone(repos: dict[str, Path], gate: threading.Event | None = None) -> CloneRepo:
     """`clone_repo` that copies `repos[url]` to dest; any other URL fails like a bad clone.
 

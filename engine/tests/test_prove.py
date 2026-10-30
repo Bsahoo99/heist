@@ -1,15 +1,12 @@
 """The RLS proof: the repo's migrations in a throwaway Postgres, fake rows, read back as strangers.
 
-Tests marked `docker` need a running Docker daemon (testcontainers Postgres 16) and skip without it.
+Tests marked `docker` need a running Docker daemon (testcontainers Postgres 16, from conftest) and skip without it.
 """
 
 import json
 import logging
-import shutil
-import subprocess
 import threading
 import time
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -34,31 +31,6 @@ from heist.prove.sandbox import prove_local, prove_rls
 from heist.scene import ProofRow
 
 MARKER = "/tmp/heist-pwned"
-
-
-def _docker_up() -> bool:
-    if shutil.which("docker") is None:
-        return False
-    try:
-        res = subprocess.run(["docker", "info"], capture_output=True, timeout=20, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return res.returncode == 0
-
-
-@pytest.fixture(scope="session")
-def pg_container() -> Iterator[Any]:
-    if not _docker_up():
-        pytest.skip("Docker is not running")
-    from testcontainers.community.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16", driver=None) as pg:
-        yield pg
-
-
-@pytest.fixture(scope="session")
-def pg_dsn(pg_container: Any) -> str:
-    return pg_container.get_connection_url()
 
 
 @pytest.fixture

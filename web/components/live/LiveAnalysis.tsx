@@ -160,7 +160,7 @@ export function LiveAnalysis({ id, layout = "normal" }: { id: string; layout?: R
     <main className="results-page">
       {layout === "normal" && <SiteBar repo={repo} />}
       {state.phase === "live" && <LiveView events={state.events} repo={repo} layout={layout} />}
-      {state.phase === "results" && <ResultsView scene={state.scene} layout={layout} />}
+      {state.phase === "results" && <ResultsView scene={state.scene} id={id} layout={layout} />}
       {state.phase === "error" && <Notice title="We couldn't run this heist" message={state.message} />}
       {state.phase === "lost" && <Notice title="Lost the connection" message={state.message} onReload={reload} />}
       {state.phase === "gone" && <Notice title="Nothing here" message={GONE_COPY} />}

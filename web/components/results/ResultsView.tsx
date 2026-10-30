@@ -4,11 +4,15 @@ import { useMemo, useRef, useState } from "react";
 import type { Scene, SceneFinding } from "@/lib/scene.gen";
 import { ZONES } from "@/components/map/layout";
 import { FindingsList, SEVERITY_LABEL, StatusBadge } from "@/components/panels/FindingsList";
+import { BadgeBlock } from "@/components/panels/BadgeBlock";
+import { FixCard } from "@/components/panels/FixCard";
+import { NoRulesCard } from "@/components/panels/NoRulesCard";
 import { ProofRows } from "@/components/panels/ProofRows";
 import { StepPanel } from "@/components/panels/StepPanel";
 import { Legend, Replay } from "@/components/replay/Replay";
 import { StepPlayer } from "@/components/replay/StepPlayer";
 import { useReplayClock } from "@/components/replay/useReplayClock";
+import { offersBadge } from "@/lib/badge";
 import { buildTimeline, playerSteps } from "@/lib/timeline";
 
 export type ResultsLayout = "normal" | "video";
@@ -33,11 +37,14 @@ function FindingStage({
   finding,
   autoPlay,
   layout,
+  badgeId,
 }: {
   scene: Scene;
   finding: SceneFinding | null;
   autoPlay: boolean;
   layout: ResultsLayout;
+  /** The analysis id when the clean run offers its README badge here. */
+  badgeId?: string;
 }) {
   const timeline = useMemo(() => buildTimeline(finding, scene), [finding, scene]);
   const steps = useMemo(() => playerSteps(finding, scene), [finding, scene]);
@@ -65,10 +72,18 @@ function FindingStage({
             {/* The recording layout keeps the caption to the story alone, so the key moves up here. */}
             {layout === "video" && <Legend />}
           </>
-        ) : (
+        ) : scene.meta.has_db_rules ? (
           <>
             <h1 className="results-title">Every lock held</h1>
             <p className="results-sub">Heist tried every door of {scene.meta.repo} and found no way in.</p>
+          </>
+        ) : (
+          // Mistakes 3 and 4 need the database rules: never claim those locks held.
+          <>
+            <h1 className="results-title">No way in through the code</h1>
+            <p className="results-sub">
+              Heist found no way in through the code of {scene.meta.repo}, but it could not check your database rules.
+            </p>
           </>
         )}
       </header>
@@ -98,6 +113,13 @@ function FindingStage({
               <ProofRows rows={finding.proof_rows} />
             </section>
           )}
+          {!finding && badgeId && <BadgeBlock scene={scene} id={badgeId} />}
+        </div>
+      )}
+      {/* Under the panel on phones; under the replay on wide screens, where the diff has room. */}
+      {layout === "normal" && finding && (
+        <div className="results-fix">
+          <FixCard fix={finding.fix} />
         </div>
       )}
     </>
@@ -111,15 +133,22 @@ function FindingStage({
  *
  * `layout="video"` is for screen recordings: one column with the header line,
  * the map as large as the viewport allows, the caption and the player; no
- * side panel and no findings list.
+ * side panel, findings list, fix, missing-rules or badge cards.
+ *
+ * The selected finding's fix sits under its step panel. Without database
+ * rules the missing-rules card leads the list (and replaces it when there are
+ * no findings). With an `id` and every check held, the README badge is offered.
  */
 export function ResultsView({
   scene,
+  id,
   initialFindingId,
   autoPlay = true,
   layout = "normal",
 }: {
   scene: Scene;
+  /** The analysis id, for the README badge. Pages without one (the dev pages) offer no badge. */
+  id?: string;
   initialFindingId?: string;
   autoPlay?: boolean;
   layout?: ResultsLayout;
@@ -131,6 +160,9 @@ export function ResultsView({
   });
   const finding = scene.findings.find((f) => f.id === selected.id) ?? null;
   const top = useRef<HTMLDivElement>(null);
+  const badgeId = id && offersBadge(scene) ? id : undefined;
+  const rulesMissing = !scene.meta.has_db_rules;
+  const hasFindings = scene.findings.length > 0;
 
   const onSelect = (id: string) => {
     setSelected({ id, play: true });
@@ -149,14 +181,22 @@ export function ResultsView({
         finding={finding}
         autoPlay={selected.play}
         layout={layout}
+        badgeId={badgeId}
       />
       {layout === "normal" && (
-        <section className="results-list" aria-labelledby="results-list-title">
-          <h2 id="results-list-title" className="results-list-title">
-            {scene.findings.length > 0 ? `All findings (${scene.findings.length})` : "Findings"}
-          </h2>
-          <FindingsList findings={scene.findings} selectedId={finding?.id ?? null} onSelect={onSelect} />
-        </section>
+        <div className="results-list">
+          {rulesMissing && <NoRulesCard />}
+          {/* Only possible findings, every check held: the badge is earned, offer it above the list. */}
+          {hasFindings && badgeId && <BadgeBlock scene={scene} id={badgeId} />}
+          {(hasFindings || !rulesMissing) && (
+            <section aria-labelledby="results-list-title">
+              <h2 id="results-list-title" className="results-list-title">
+                {hasFindings ? `All findings (${scene.findings.length})` : "Findings"}
+              </h2>
+              <FindingsList findings={scene.findings} selectedId={finding?.id ?? null} onSelect={onSelect} />
+            </section>
+          )}
+        </div>
       )}
     </div>
   );

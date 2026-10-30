@@ -35,9 +35,13 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+/** Where to reach the engine, and an optional signal to give up early. */
+export type RequestOptions = { base?: string; signal?: AbortSignal };
+
+async function request(path: string, init?: RequestInit, opts: RequestOptions = {}): Promise<Response> {
+  const base = (opts.base ?? ENGINE_URL).replace(/\/+$/, "");
   try {
-    return await fetch(`${ENGINE_URL}${path}`, { cache: "no-store", ...init });
+    return await fetch(`${base}${path}`, { cache: "no-store", signal: opts.signal, ...init });
   } catch {
     throw new ApiError(UNREACHABLE_COPY, 0);
   }
@@ -61,8 +65,8 @@ export async function startAnalysis(url: string): Promise<{ id: string; cached: 
 }
 
 /** The analysis record, or null when the engine has no such id (for example after a restart). */
-export async function getAnalysis(id: string): Promise<Analysis | null> {
-  const res = await request(`/analyses/${encodeURIComponent(id)}`);
+export async function getAnalysis(id: string, opts?: RequestOptions): Promise<Analysis | null> {
+  const res = await request(`/analyses/${encodeURIComponent(id)}`, undefined, opts);
   if (res.status === 404) return null;
   if (!res.ok) throw await errorFrom(res);
   return res.json();

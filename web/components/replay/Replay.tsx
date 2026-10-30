@@ -6,6 +6,7 @@ import type { Scene, SceneFinding } from "@/lib/scene.gen";
 import { CityMap } from "@/components/map/CityMap";
 import { boxRect, layoutLabels, partialPath, placeItems, routePath, type Point, type Rect } from "@/components/map/layout";
 import { ProofRows } from "@/components/panels/ProofRows";
+import { badgeText } from "@/lib/badge";
 import { buildTimeline } from "@/lib/timeline";
 import { cameraFrame, pickCorner, wideFrame, type Corner } from "./camera";
 import { MARKER, makePlan, placeMarkers, replayView, type ReplayView, type Sprite } from "./replayView";
@@ -281,18 +282,32 @@ function Caption({ view, plan, finding }: { view: ReplayView; plan: ReturnType<t
   );
 }
 
-/** Shown in the caption's place once the replay is over, so it never covers the map. */
-function EndCard({ clean, onAgain }: { clean: boolean; onAgain: () => void }): ReactNode {
+/**
+ * Shown in the caption's place once the replay is over, so it never covers the
+ * map. A clean run ends on the heist failing; without the database rules it
+ * says only what Heist could test.
+ */
+function EndCard({ scene, clean, onAgain }: { scene: Scene; clean: boolean; onAgain: () => void }): ReactNode {
+  const rules = scene.meta.has_db_rules;
   return (
-    <div className={clean ? "replay-end replay-end-clean" : "replay-end"} role="status">
-      <p className="replay-end-title">
-        {clean ? "Heist failed. Your app held up against all 7 checks." : "End of replay"}
-      </p>
+    <div className={clean && rules ? "replay-end replay-end-clean" : "replay-end"} role="status">
       {clean ? (
-        <p className="replay-badge">Heist-tested: 7/7 locks held</p>
+        <div className="replay-end-words">
+          <p className="replay-end-kicker">Heist failed</p>
+          <p className="replay-end-title" data-testid="replay-end-title">
+            {rules ? "Your app held up against all seven checks." : "No way in through the code."}
+          </p>
+          {!rules && <p className="replay-end-text">Heist could not check your database rules.</p>}
+        </div>
       ) : (
-        <p className="replay-end-text">Step through each stop with the player, or pick another finding.</p>
+        <div className="replay-end-words">
+          <p className="replay-end-title" data-testid="replay-end-title">
+            End of replay
+          </p>
+          <p className="replay-end-text">Step through each stop with the player, or pick another finding.</p>
+        </div>
       )}
+      {clean && rules && <p className="replay-badge">{badgeText(scene)}</p>}
       <button type="button" className="replay-again" onClick={onAgain}>
         Watch again
       </button>
@@ -424,7 +439,7 @@ export function Replay({
         )}
       </div>
       {ended ? (
-        <EndCard clean={plan.kind === "clean"} onAgain={() => clock.setPlaying(true)} />
+        <EndCard scene={scene} clean={plan.kind === "clean"} onAgain={() => clock.setPlaying(true)} />
       ) : (
         <Caption view={view} plan={plan} finding={finding} />
       )}
