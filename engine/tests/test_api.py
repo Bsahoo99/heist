@@ -327,3 +327,15 @@ async def test_no_prover_proves_nothing(client, vuln_app_url_stub):
     await wait_done(client, aid)
     scene = (await client.get(f"/analyses/{aid}")).json()["scene"]
     assert all(f["status"] != "proved" for f in scene["findings"])
+
+
+@pytest.mark.parametrize("prover", [None, "docker", "modal"])
+async def test_startup_warms_the_chosen_prover(monkeypatch: pytest.MonkeyPatch, prover):
+    from heist import api
+
+    warmed: list[str] = []
+    monkeypatch.setattr(api, "warm_in_background", warmed.append)
+    app = create_app(ApiConfig(offline=True, origins=[], prover=prover))
+    async with app.router.lifespan_context(app):
+        pass
+    assert warmed == ([prover] if prover else [])

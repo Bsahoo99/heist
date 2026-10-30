@@ -7,6 +7,8 @@ import json
 import logging
 import shutil
 import subprocess
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -235,6 +237,79 @@ def test_hostile_dynamic_sql_runs_without_superuser(pg_container: Any, pg_dsn: s
     assert _marker_absent(pg_container)
 
 
+def _fails_to_apply(pg_dsn: str, attempt: str) -> None:
+    """`attempt` runs in a migration file that then creates `reached`. If the attempt fails,
+    the file rolls back and the proof stops at apply because `reached` is missing."""
+    with pytest.raises(ProofFailed) as e:
+        run_proof(pg_dsn, [f"{attempt}\ncreate table reached (id int);"], ["reached"])
+    assert e.value.stage == "apply"
+
+
+C_FUNCTION = "create function f() returns int language c as ''x'', ''y''"
+
+
+@pytest.mark.docker
+@pytest.mark.parametrize(
+    "attempt",
+    [
+        "do $$ begin execute 'create extension dblink'; end $$;",
+        "do $$ begin execute 'create extension postgres_fdw'; end $$;",
+        "do $$ begin execute 'alter role heist_migrator superuser'; end $$;",
+        "do $$ begin execute 'grant pg_execute_server_program to heist_migrator'; end $$;",
+        "do $$ begin execute 'grant pg_read_server_files to heist_migrator'; end $$;",
+        "do $$ begin execute 'set role postgres'; end $$;",
+        f"do $$ begin execute '{C_FUNCTION}'; end $$;",
+    ],
+)
+def test_dynamic_escalation_fails_inside_a_migration(pg_dsn: str, attempt: str):
+    _fails_to_apply(pg_dsn, attempt)
+
+
+@pytest.mark.docker
+def test_role_escalation_never_sticks(pg_dsn: str):
+    # Run statically, these are skipped; run dynamically, they fail. Either way nothing changes.
+    sql = (
+        "alter role heist_migrator superuser;\n"
+        "grant pg_execute_server_program to heist_migrator;\n"
+        "create table t (id int);"
+    )
+    run_proof(pg_dsn, [sql], ["t"])
+    with psycopg.connect(pg_dsn, autocommit=True) as admin:
+        row = admin.execute(
+            "select rolsuper, pg_has_role('heist_migrator', 'pg_execute_server_program', 'member')"
+            " from pg_roles where rolname = 'heist_migrator'"
+        ).fetchone()
+    assert row == (False, False)
+
+
+@pytest.mark.docker
+def test_security_definer_functions_belong_to_the_migrator(pg_dsn: str):
+    sql = """
+    create function public.whoami() returns text language sql security definer as $$
+      select current_user || ':' || (select rolsuper::text from pg_roles where rolname = current_user)
+    $$;
+    create table public.t (id int, who text default public.whoami());
+    """
+    rows = run_proof(pg_dsn, [sql], ["t"])
+    assert rows["t"] and {r.row["who"] for r in rows["t"]} == {"heist_migrator:false"}
+
+
+@pytest.mark.docker
+def test_anon_carries_the_anon_role_claim(pg_dsn: str):
+    sql = """
+    create table public.t (id int, user_id uuid references auth.users (id), note text);
+    alter table public.t enable row level security;
+    create policy anon_only on public.t for select using (auth.jwt() ->> 'role' = 'anon');
+    create table public.u (id int, user_id uuid references auth.users (id), note text);
+    alter table public.u enable row level security;
+    create policy role_anon on public.u for select
+      using (auth.role() = 'anon' and auth.uid() is null);
+    """
+    rows = run_proof(pg_dsn, [sql], ["t", "u"])
+    for table in ("t", "u"):
+        assert rows[table] and {r.as_who for r in rows[table]} == {"anonymous"}
+
+
 @pytest.mark.docker
 def test_a_migration_cannot_switch_off_the_statement_timeout(pg_dsn: str):
     sql = (
@@ -279,7 +354,7 @@ def test_seeding_fills_real_schemas(pg_dsn: str):
     got = rows["applications"]
     assert got and all(r.as_who == "anonymous" for r in got[:1])
     row = got[0].row
-    assert row["author_id"] == "Test Alice"
+    assert row["author_id"] == "Test Alice (user id)"
     assert row["contact_email"] == "alice@example.test"
     assert row["mobile_phone"] == "555-0100"
     assert row["full_name"] == "Test Alice"
@@ -344,7 +419,7 @@ def test_storage_and_wrapped_transactions(pg_dsn: str, vuln_migrations: list[str
     """
     rows = run_proof(pg_dsn, [*vuln_migrations, extra], ["docs"])
     assert rows["docs"] and all(r.as_who == "another_user" for r in rows["docs"])
-    assert rows["docs"][0].row["owner_id"] == "Test Alice"
+    assert rows["docs"][0].row["owner_id"] == "Test Alice (user id)"
 
 
 @pytest.mark.docker
@@ -388,6 +463,7 @@ def test_run_proof_leaves_no_database_behind(pg_dsn: str, vuln_migrations: list[
 
 @pytest.mark.docker
 def test_prove_local_through_the_pipeline(vuln_app_path: Path):
+    sandbox.warm_local()  # images are built ahead of an analysis, never inside one
     s = run_analysis(str(vuln_app_path), lambda e: None, None, prove=prove_local)
     proved = [f for f in s.findings if f.status == "proved"]
     assert proved
@@ -463,3 +539,120 @@ def test_modal_image_ships_only_the_runner():
     assert image is not None
     assert all((sandbox.HEIST_DIR / rel).is_file() for rel in sandbox.SHIPPED_FILES)
     assert not any(rel.endswith(".env") or "llm" in rel for rel in sandbox.SHIPPED_FILES)
+
+
+def _ws_with_big_migration(tmp_copy: Any, vuln_app_path: Path):
+    root = tmp_copy(vuln_app_path)
+    big = "-- filler\n" * (sandbox.MAX_PAYLOAD_BYTES // 10 + 1)
+    (root / "supabase/migrations/0004_big.sql").write_text(big, encoding="utf-8")
+    ws = load_workspace(root)
+    db = replay_migrations(ws)
+    assert db is not None
+    return db, ws
+
+
+def test_too_much_migration_sql_skips_the_proof(
+    tmp_copy: Any,
+    vuln_app_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    called: list[str] = []
+
+    def run(payload: str) -> str:
+        called.append(payload)
+        return ""
+
+    monkeypatch.setattr(sandbox, "_run_in_modal", run)
+    db, ws = _ws_with_big_migration(tmp_copy, vuln_app_path)
+    with caplog.at_level(logging.INFO):
+        assert prove_rls(db, ws, ["messages"]) == {}
+    assert called == []
+    assert "migrations_too_large" in caplog.text
+
+
+def test_modal_is_skipped_until_warm(
+    vuln_app_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    monkeypatch.setattr(sandbox, "_modal_ready", None)
+
+    def no_modal(*a: Any, **k: Any) -> Any:
+        raise AssertionError("an analysis must never build or create on Modal before warmup")
+
+    monkeypatch.setattr(sandbox.modal.Sandbox, "create", no_modal)
+    db, ws = _db_and_ws(vuln_app_path)
+    with caplog.at_level(logging.INFO):
+        assert prove_rls(db, ws, ["messages"]) == {}
+    assert "modal_not_warm" in caplog.text
+
+
+def test_docker_is_skipped_until_the_image_exists(
+    vuln_app_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    monkeypatch.setattr(sandbox, "_local_image_ready", lambda: False)
+
+    def no_docker(*a: Any, **k: Any) -> Any:
+        raise AssertionError("an analysis must never build the image")
+
+    monkeypatch.setattr(sandbox.subprocess, "run", no_docker)
+    db, ws = _db_and_ws(vuln_app_path)
+    with caplog.at_level(logging.INFO):
+        assert prove_local(db, ws, ["messages"]) == {}
+    assert "docker_image_not_ready" in caplog.text
+
+
+class _FakeStream:
+    def write(self, data: Any) -> None:
+        pass
+
+    def write_eof(self) -> None:
+        pass
+
+    def drain(self) -> None:
+        pass
+
+    def read(self) -> str:
+        return ""
+
+
+class _HangingSandbox:
+    """A sandbox that never finishes until someone terminates it."""
+
+    def __init__(self) -> None:
+        self.stopped = threading.Event()
+        self.stdin = _FakeStream()
+        self.stdout = _FakeStream()
+
+    def wait(self, raise_on_termination: bool = True) -> None:
+        self.stopped.wait(30)
+
+    def terminate(self) -> None:
+        self.stopped.set()
+
+
+def test_a_hanging_modal_sandbox_is_terminated_at_the_deadline(
+    vuln_app_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    box = _HangingSandbox()
+    ready: Any = sandbox._ModalReady(app=object(), image=object())  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+    monkeypatch.setattr(sandbox, "_modal_ready", ready)
+    monkeypatch.setattr(sandbox.modal.Sandbox, "create", lambda *a, **k: box)
+    monkeypatch.setattr(sandbox, "PROOF_DEADLINE_S", 0.5)
+    db, ws = _db_and_ws(vuln_app_path)
+    started = time.monotonic()
+    with caplog.at_level(logging.INFO):
+        assert prove_rls(db, ws, ["messages"]) == {}
+    assert time.monotonic() - started < 5
+    assert box.stopped.wait(5)
+    assert "stage timeout" in caplog.text
+
+
+def test_warmup_command_builds_the_chosen_image(monkeypatch: pytest.MonkeyPatch):
+    built: list[str] = []
+    monkeypatch.setattr(sandbox, "warm_local", lambda: built.append("docker"))
+    monkeypatch.setattr(sandbox, "warm_modal", lambda: built.append("modal"))
+    assert sandbox.main(["warmup", "--docker"]) == 0
+    assert sandbox.main(["warmup", "--modal"]) == 0
+    assert built == ["docker", "modal"]
+    with pytest.raises(SystemExit):
+        sandbox.main(["warmup"])

@@ -53,7 +53,9 @@ ALICE = {"id": ALICE_ID, "name": "Test Alice", "email": "alice@example.test"}
 BOB = {"id": BOB_ID, "name": "Test Bob", "email": "bob@example.test"}
 FAKE_PHONE = "555-0100"
 FAKE_NOTE = "Fake note for testing"
-SHOWN_AS = {ALICE_ID: ALICE["name"], BOB_ID: BOB["name"]}
+# An owner uuid is shown as whose id it is, so the proof says whose row leaked without
+# pretending the column held a name.
+SHOWN_AS = {ALICE_ID: f"{ALICE['name']} (user id)", BOB_ID: f"{BOB['name']} (user id)"}
 
 STATEMENT_TIMEOUT_MS = 5000
 CONNECT_TIMEOUT_S = 10
@@ -635,7 +637,8 @@ def _shape(row: dict[str, Any], owners: list[str]) -> dict[str, Any]:
 
 
 _ACTORS: tuple[tuple[AsWho, str, dict[str, str]], ...] = (
-    ("anonymous", "anon", {}),
+    # What Supabase sets for a request with the anon key: a role, no subject.
+    ("anonymous", "anon", {"role": "anon"}),
     (
         "another_user",
         "authenticated",
@@ -805,16 +808,27 @@ def private_postgres() -> Iterator[str]:
         for p in (base, sock):
             shutil.chown(p, "postgres", "postgres")
         as_postgres = [shutil.which("gosu") or "gosu", "postgres"]
+    # Password auth even on the socket, so the role passwords mean something in here too.
+    password = secrets.token_urlsafe(24)
+    pwfile = base / "pw"
+    pwfile.write_text(password, encoding="utf-8")
+    pwfile.chmod(0o600)
+    if as_postgres:
+        shutil.chown(pwfile, "postgres", "postgres")
     bin_dir = _pg_bin()
-    initdb = [str(bin_dir / "initdb"), "-D", str(data), "-U", "postgres", "--auth=trust"]
+    initdb = [str(bin_dir / "initdb"), "-D", str(data), "-U", "postgres", f"--pwfile={pwfile}"]
+    initdb += ["--auth-local=scram-sha-256", "--auth-host=scram-sha-256"]
     initdb += ["-E", "UTF8", "--locale=C", "--no-sync", "--no-instructions"]
-    subprocess.run([*as_postgres, *initdb], capture_output=True, check=True, timeout=60)
+    try:
+        subprocess.run([*as_postgres, *initdb], capture_output=True, check=True, timeout=60)
+    finally:
+        pwfile.unlink(missing_ok=True)
     opts = f"-c listen_addresses='' -k {sock} -c fsync=off -c full_page_writes=off"
     start = [str(bin_dir / "pg_ctl"), "-D", str(data), "-l", str(base / "pg.log")]
     start += ["-w", "-t", "30", "-o", opts, "start"]
     subprocess.run([*as_postgres, *start], capture_output=True, check=True, timeout=60)
     try:
-        yield make_conninfo(host=str(sock), user="postgres", dbname="postgres")
+        yield make_conninfo(host=str(sock), user="postgres", password=password, dbname="postgres")
     finally:
         subprocess.run(
             [*as_postgres, str(bin_dir / "pg_ctl"), "-D", str(data), "-m", "immediate", "stop"],

@@ -387,12 +387,24 @@ body {
   /* Not a query container: the compact card keeps its table at any width. */
   container-type: normal;
 }
+.replay-proof .proof-rows.proof-rows-compact table {
+  /* Auto layout: whole cells take their width, the rest share what is left. */
+  table-layout: auto;
+}
 .proof-rows.proof-rows-compact td,
 .proof-rows.proof-rows-compact td:last-child {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  max-width: 0;
+}
+/* Owner and email: whose data leaked, and the example.test that marks it fake. */
+.proof-rows.proof-rows-compact td.proof-cell-whole {
+  width: 1%;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
 }
 .replay-proof .proof-rows-group figcaption {
   color: var(--map-flag-ink);

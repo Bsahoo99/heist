@@ -27,7 +27,7 @@ from heist.llm.client import MetaClient
 from heist.llm.config import env, load_env
 from heist.models import ProgressEvent
 from heist.pipeline import GENERIC_ERROR_COPY, Prove, run_analysis
-from heist.prove.sandbox import prove_local, prove_rls
+from heist.prove.sandbox import Prover, prove_local, prove_rls, warm_in_background
 from heist.scene import Scene
 
 MAX_RUNNING = 2
@@ -37,7 +37,6 @@ NOT_FOUND_COPY = "This analysis is gone. Run it again."
 QUEUED_COPY = "Waiting for a free crew"
 
 Status = Literal["running", "done", "error"]
-Prover = Literal["modal", "docker"]
 PROVERS: tuple[Prover, ...] = ("modal", "docker")
 BAD_PROVER_COPY = "HEIST_PROVER must be modal, docker or unset."
 
@@ -196,6 +195,9 @@ def create_app(config: ApiConfig) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if config.prover is not None:
+            # Build the prover image now, off the request path; proofs are skipped until then.
+            warm_in_background(config.prover)
         yield
         pool.shutdown(wait=False, cancel_futures=True)
 
