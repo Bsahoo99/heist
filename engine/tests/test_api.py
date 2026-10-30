@@ -9,12 +9,15 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from heist import pipeline
-from heist.api import ApiConfig, create_app
+from heist.api import QUEUED_COPY, ApiConfig, create_app
 from heist.fetch import BAD_URL_COPY, UNSUPPORTED_STACK_COPY
+from heist.llm.client import MetaClient
+from heist.pipeline import GENERIC_ERROR_COPY
 
 from .stub_repos import FIXTURES_DIR, make_stub_clone, stub_url, write_plain_vite_app
 
 VULN_URL = stub_url("vuln-app")
+CLEAN_URL = stub_url("clean-app")
 PLAIN_URL = stub_url("plain-vite")
 
 
@@ -30,6 +33,7 @@ def clones(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, gate: threading.Even
     """Stubs clone_repo with the fixtures; returns the URLs it was asked to clone."""
     repos = {
         VULN_URL: FIXTURES_DIR / "vuln_app",
+        CLEAN_URL: FIXTURES_DIR / "clean_app",
         PLAIN_URL: write_plain_vite_app(tmp_path / "plain"),
     }
     stub = make_stub_clone(repos, gate)
@@ -168,6 +172,37 @@ async def test_same_url_while_running_returns_the_same_id(client, clones, gate):
     rerun = await start(client, VULN_URL)
     assert rerun != first.json()["id"]
     await wait_done(client, rerun)
+
+
+async def test_a_failing_client_ends_the_run_in_error(monkeypatch: pytest.MonkeyPatch, clones):
+    def broken(cls: type[MetaClient], *args: Any, **kwargs: Any) -> MetaClient:
+        raise RuntimeError("no client today")
+
+    monkeypatch.setattr(MetaClient, "from_env", classmethod(broken))
+    app = create_app(ApiConfig(offline=False, origins=[]))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        aid = await start(c, VULN_URL)
+        events = await wait_done(c, aid)
+        assert events[-1] == {"kind": "error", "message": GENERIC_ERROR_COPY, "data": {}}
+        body = (await c.get(f"/analyses/{aid}")).json()
+        assert body["status"] == "error" and body["error"] == GENERIC_ERROR_COPY
+        # Not stuck as running: the same URL starts a fresh run.
+        assert await start(c, VULN_URL) != aid
+    assert clones == []
+
+
+async def test_a_queued_run_says_it_is_waiting(client, clones, gate):
+    gate.clear()
+    first = await start(client, VULN_URL)
+    second = await start(client, CLEAN_URL)
+    queued = await start(client, PLAIN_URL)
+    gate.set()
+    first_events = await wait_done(client, first)
+    queued_events = await wait_done(client, queued)
+    await wait_done(client, second)
+    assert queued_events[0] == {"kind": "stage", "message": QUEUED_COPY, "data": {}}
+    assert queued_events[1]["message"] == "Fetching the repo"
+    assert all(e["message"] != QUEUED_COPY for e in first_events)
 
 
 async def test_unknown_id_404(client):

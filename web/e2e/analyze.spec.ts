@@ -39,6 +39,10 @@ test("a non-GitHub URL shows the reason under the input", async ({ page }) => {
   await page.getByRole("button", { name: "Run the heist" }).click();
   await expect(page.getByText(BAD_URL_COPY)).toBeVisible();
   await expect(page).toHaveURL("/");
+  const input = page.getByPlaceholder("https://github.com/you/your-app");
+  await expect(input).toHaveAttribute("aria-invalid", "true");
+  await input.pressSequentially("x");
+  await expect(input).not.toHaveAttribute("aria-invalid", "true");
 });
 
 test("an unsupported repo ends in a plain error with a way back", async ({ page }) => {

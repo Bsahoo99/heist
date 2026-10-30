@@ -61,13 +61,13 @@ function FindingStage({
               </span>
               <StatusBadge status={finding.status} />
             </div>
-            <h2 className="results-title">{finding.title}</h2>
+            <h1 className="results-title">{finding.title}</h1>
             {/* The recording layout keeps the caption to the story alone, so the key moves up here. */}
             {layout === "video" && <Legend />}
           </>
         ) : (
           <>
-            <h2 className="results-title">Every lock held</h2>
+            <h1 className="results-title">Every lock held</h1>
             <p className="results-sub">Heist tried every door of {scene.meta.repo} and found no way in.</p>
           </>
         )}

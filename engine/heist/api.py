@@ -33,6 +33,7 @@ MAX_RUNNING = 2
 MAX_RECORDS = 50
 DEFAULT_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 NOT_FOUND_COPY = "This analysis is gone. Run it again."
+QUEUED_COPY = "Waiting for a free crew"
 
 Status = Literal["running", "done", "error"]
 
@@ -134,9 +135,11 @@ def _work(record: AnalysisRecord, loop: asyncio.AbstractEventLoop, offline: bool
         else:
             loop.call_soon_threadsafe(record.publish, e)
 
-    # One client per analysis: clients are not shared across threads.
-    client = None if offline else MetaClient.from_env()
+    client: MetaClient | None = None
     try:
+        # One client per analysis: clients are not shared across threads. Built inside the
+        # try, so a failure here still ends the record instead of leaving it running.
+        client = None if offline else MetaClient.from_env()
         scene = run_analysis(record.url, emit, client)
     except Exception as exc:  # noqa: BLE001 - the pipeline already emitted the error copy
         reason = exc.reason if isinstance(exc, UnsupportedRepo) else GENERIC_ERROR_COPY
@@ -161,7 +164,7 @@ def _error(status: int, message: str) -> JSONResponse:
 def create_app(config: ApiConfig) -> FastAPI:
     store = AnalysisStore()
     pool = ThreadPoolExecutor(max_workers=MAX_RUNNING, thread_name_prefix="heist-analysis")
-    tasks: set[asyncio.Future[None]] = set()
+    tasks: set[asyncio.Future[None]] = set()  # submitted and not finished: running or queued
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -189,6 +192,9 @@ def create_app(config: ApiConfig) -> FastAPI:
             return {"id": running.id, "cached": False}
         record = AnalysisRecord(id=secrets.token_urlsafe(9), url=url)
         store.add(record)
+        if len(tasks) >= MAX_RUNNING:
+            # Every worker is busy: say so, or the page would only show "connecting".
+            record.publish(ProgressEvent(kind="stage", message=QUEUED_COPY))
         loop = asyncio.get_running_loop()
         task = loop.run_in_executor(pool, _work, record, loop, config.offline)
         tasks.add(task)

@@ -50,7 +50,7 @@ async function DevReplay({ searchParams }: { searchParams: SearchParams }) {
       {!video && (
         <header className="dev-bar">
           <span className="dev-tag">Dev preview</span>
-          <h1 className="dev-repo">{scene.meta.repo}</h1>
+          <p className="dev-repo">{scene.meta.repo}</p>
           <nav aria-label="Fixture" className="dev-nav">
             {links.map((l) => (
               <Link key={l.href} href={l.href} aria-current={l.on ? "page" : undefined}>

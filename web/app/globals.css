@@ -968,12 +968,13 @@ a.site-mark:focus-visible {
   color: var(--map-ink);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
-@media (min-width: 1024px) {
+/* Two columns only where the map gets room to read; below that it stacks. */
+@media (min-width: 1200px) {
   .landing {
-    grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 480px) minmax(0, 1fr);
     align-items: center;
-    gap: 40px;
-    padding: 48px 48px 48px 64px;
+    gap: 32px;
+    padding: 48px;
   }
 }
 .landing-copy {
@@ -1003,16 +1004,24 @@ a.site-mark:focus-visible {
 .landing-map {
   min-width: 0;
   pointer-events: none;
-  opacity: 0.9;
+}
+.landing-map .citymap-wide .citymap-svg {
+  aspect-ratio: 680 / 440;
+  height: auto;
+}
+/* The sample route reads as a hint, not an alarm. */
+.landing-map polyline[stroke="var(--map-flag)"] {
+  stroke-opacity: 0.7;
 }
 /* The phone framing toggle has no use on a picture. */
 .landing-map .citymap-toggle,
 .live-map .citymap-toggle {
   display: none;
 }
-@media (max-width: 1023px) {
+@media (max-width: 1199px) {
   .landing-map {
-    max-width: 640px;
+    width: 100%;
+    max-width: 880px;
   }
 }
 
@@ -1051,8 +1060,14 @@ a.site-mark:focus-visible {
   outline-offset: 1px;
   border-color: transparent;
 }
+/* After a refusal: the danger colour, focused or not, until the user edits. */
 .run-input[aria-invalid="true"] {
   border-color: var(--map-flag);
+  background: color-mix(in srgb, var(--map-flag) 8%, var(--code-bg));
+}
+.run-input[aria-invalid="true"]:focus-visible {
+  border-color: var(--map-flag);
+  outline-color: var(--map-flag);
 }
 .run-button {
   display: inline-flex;
@@ -1119,14 +1134,23 @@ a.site-mark:focus-visible {
 .live {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   max-width: 1560px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 12px 16px;
 }
+/* 124 px: the site bar, the title and status line, and the map box's frame.
+   At 1280x720 that draws the whole block at about 0.77x (zone titles near 11.5 px). */
 .live-map .citymap-full .citymap-svg {
-  height: calc(100dvh - 176px);
+  height: calc(100dvh - 124px);
+  max-height: none;
   min-height: 280px;
+}
+.live-head .results-title {
+  flex: 0 1 auto;
+}
+.live-head .live-status {
+  flex: 1 1 280px;
 }
 /* Zones fade up as the engine finds the app's parts in them. */
 .live-map [data-active] {
@@ -1141,7 +1165,7 @@ a.site-mark:focus-visible {
   padding: 0;
 }
 .live[data-layout="video"] .live-map .citymap-full .citymap-svg {
-  height: calc(100dvh - 120px);
+  height: calc(100dvh - 60px);
 }
 .live-status {
   display: flex;
@@ -1204,4 +1228,19 @@ a.site-mark:focus-visible {
 }
 .live-again {
   margin-top: 4px;
+}
+.live-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.live-other {
+  display: inline-flex;
+  align-items: center;
+  height: 48px;
+  padding: 0 16px;
+}
+.nowrap {
+  white-space: nowrap;
 }
