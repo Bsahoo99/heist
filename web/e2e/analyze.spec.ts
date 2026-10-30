@@ -5,6 +5,10 @@ const STUB_URL = "https://github.com/heist-fixtures/vuln-app";
 const UNSUPPORTED_URL = "https://github.com/heist-fixtures/plain-vite";
 
 const BAD_URL_COPY = "Paste a public GitHub repo URL, like https://github.com/you/your-app.";
+const CLONE_FAILED_COPY = "We couldn't fetch that repo. Make sure it is public and the URL is right.";
+const RATE_LIMIT_COPY =
+  "You've started 5 new heists in the last hour. Try again later. " +
+  "Repos Heist has already checked, like the examples, still open right away.";
 const UNSUPPORTED_COPY =
   "Heist supports Vite + React + Supabase and Next.js + Supabase apps. This stack is not supported yet.";
 
@@ -43,6 +47,31 @@ test("a non-GitHub URL shows the reason under the input", async ({ page }) => {
   await expect(input).toHaveAttribute("aria-invalid", "true");
   await input.pressSequentially("x");
   await expect(input).not.toHaveAttribute("aria-invalid", "true");
+});
+
+test("a repo Heist cannot fetch is refused under the input", async ({ page }) => {
+  await page.goto("/");
+  // The e2e engine's `git ls-remote` stub only knows the stub owner, like a missing repo.
+  await page.getByPlaceholder("https://github.com/you/your-app").fill("https://github.com/someone/missing");
+  await page.getByRole("button", { name: "Run the heist" }).click();
+  await expect(page.locator("#repo-url-error")).toHaveText(CLONE_FAILED_COPY);
+  await expect(page).toHaveURL("/");
+  await expect(page.getByRole("button", { name: "Run the heist" })).toBeEnabled();
+});
+
+test("the rate limit is explained under the input", async ({ page }) => {
+  // Five real runs would slow the suite down; the engine's 429 is checked in its own tests.
+  await page.route("**/analyses", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 429, contentType: "application/json", body: JSON.stringify({ error: RATE_LIMIT_COPY }) })
+      : route.fallback(),
+  );
+  await page.goto("/");
+  await page.getByPlaceholder("https://github.com/you/your-app").fill(STUB_URL);
+  await page.getByRole("button", { name: "Run the heist" }).click();
+  await expect(page.locator("#repo-url-error")).toHaveText(RATE_LIMIT_COPY);
+  await expect(page.getByPlaceholder("https://github.com/you/your-app")).toHaveAttribute("aria-invalid", "true");
+  await expect(page).toHaveURL("/");
 });
 
 test("an unsupported repo ends in a plain error with a way back", async ({ page }) => {

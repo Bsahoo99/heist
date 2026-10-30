@@ -1,0 +1,103 @@
+"""Heist's own database (supabase/migrations/0001_heist.sql): only the service role gets in.
+
+Applied the way Supabase applies it: on top of Heist's stub of what Supabase provides, as the
+migration role whose default privileges hand every new table to anon and authenticated.
+"""
+
+import secrets
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any, LiteralString
+
+import psycopg
+import pytest
+from psycopg import sql
+
+from heist.prove.runner import STUB_PATH
+
+MIGRATION = Path(__file__).resolve().parents[2] / "supabase/migrations/0001_heist.sql"
+OUTSIDERS = ("anon", "authenticated")
+
+pytestmark = pytest.mark.docker
+
+
+@pytest.fixture
+def heist_db(pg_container: Any) -> Iterator[psycopg.Connection[Any]]:
+    """A fresh database with the stub and Heist's migration; yields a superuser connection."""
+    admin_dsn = pg_container.get_connection_url()
+    name = f"heist_self_{secrets.token_hex(4)}"
+    with psycopg.connect(admin_dsn, autocommit=True) as admin:
+        admin.execute(sql.SQL("create database {}").format(sql.Identifier(name)))
+    dsn = admin_dsn.rsplit("/", 1)[0] + f"/{name}"
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        with conn.transaction():
+            conn.execute(
+                "select set_config('heist.migrator_password', %s, true),"
+                " set_config('heist.prober_password', %s, true)",
+                [secrets.token_urlsafe(12), secrets.token_urlsafe(12)],
+            )
+            conn.execute(STUB_PATH.read_bytes())
+            # As on Supabase: the service role skips RLS (the stub leaves it out; no proof uses it).
+            conn.execute("alter role service_role bypassrls")
+        with conn.transaction():
+            conn.execute("set local role heist_migrator")
+            conn.execute(MIGRATION.read_bytes())
+        yield conn
+
+
+def _one(conn: psycopg.Connection[Any], query: LiteralString) -> float:
+    row = conn.execute(query).fetchone()
+    assert row is not None
+    return float(row[0])
+
+
+ATTEMPTS = [
+    "select * from public.analyses",
+    "insert into public.analyses (id, repo, sha, status) values ('x', 'r', 's', 'running')",
+    "update public.analyses set status = 'done'",
+    "delete from public.analyses",
+    "select * from public.spend_daily",
+    "insert into public.spend_daily (day, usd) values (current_date, 1)",
+    "select public.add_spend(current_date, 1)",
+]
+
+
+@pytest.mark.parametrize("role", OUTSIDERS)
+@pytest.mark.parametrize("attempt", ATTEMPTS)
+def test_outsiders_cannot_touch_heists_tables(heist_db, role: str, attempt: str):
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), heist_db.transaction():
+        heist_db.execute(sql.SQL("set local role {}").format(sql.Identifier(role)))
+        heist_db.execute(attempt)
+
+
+def test_rls_is_on_with_no_policies(heist_db):
+    rows = heist_db.execute(
+        "select c.relname, c.relrowsecurity,"
+        " (select count(*) from pg_policies p where p.tablename = c.relname)"
+        " from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind = 'r'"
+        " order by 1"
+    ).fetchall()
+    assert rows == [("analyses", True, 0), ("spend_daily", True, 0)]
+
+
+def test_service_role_adds_spend_atomically(heist_db):
+    with heist_db.transaction():
+        heist_db.execute("set local role service_role")
+        assert _one(heist_db, "select public.add_spend('2026-11-03', 1.25)") == 1.25
+        assert _one(heist_db, "select public.add_spend('2026-11-03', 2.5)") == 3.75
+        assert _one(heist_db, "select usd from public.spend_daily where day = '2026-11-03'") == 3.75
+
+
+def test_only_one_finished_row_per_repo_and_commit(heist_db):
+    with heist_db.transaction():
+        heist_db.execute("set local role service_role")
+        for aid, status in (("a", "done"), ("b", "error"), ("c", "running")):
+            heist_db.execute(
+                "insert into public.analyses (id, repo, sha, status) values (%s, 'r', 's', %s)",
+                [aid, status],
+            )
+    with pytest.raises(psycopg.errors.UniqueViolation), heist_db.transaction():
+        heist_db.execute("set local role service_role")
+        heist_db.execute(
+            "insert into public.analyses (id, repo, sha, status) values ('d', 'r', 's', 'done')"
+        )

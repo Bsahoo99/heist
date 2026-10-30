@@ -160,48 +160,89 @@ def load_workspace(path: Path, commit_sha: str = "local") -> Workspace:
     return Workspace(root=root, app_root=app_root, commit_sha=commit_sha, files=sorted(files))
 
 
-def clone_repo(url: str, dest: Path) -> Workspace:
-    owner, repo = parse_github_url(url)
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    clone_url = f"https://github.com/{owner}/{repo}.git"
+LS_REMOTE_TIMEOUT_S = 15
+GIT_TIMEOUT_S = 60
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _git_env() -> dict[str, str]:
+    # Never ask for credentials: a private or missing repo fails at once instead of hanging.
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+
+def _git(args: list[str], timeout: float = GIT_TIMEOUT_S) -> str:
+    """Run git; any failure (exit code, timeout, no git) is the clone-failed copy."""
     try:
         proc = subprocess.run(
-            [
-                "git",
-                "-c",
-                "core.symlinks=false",
-                "clone",
-                "--depth",
-                "1",
-                "--single-branch",
-                clone_url,
-                str(dest),
-            ],
+            ["git", *args],
             check=False,
-            env=env,
+            env=_git_env(),
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=timeout,
         )
     except (subprocess.TimeoutExpired, OSError):
         raise UnsupportedRepo(CLONE_FAILED_COPY) from None
     if proc.returncode != 0:
         raise UnsupportedRepo(CLONE_FAILED_COPY)
-    try:
-        sha_proc = subprocess.run(
-            ["git", "-C", str(dest), "rev-parse", "HEAD"],
-            check=False,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        raise UnsupportedRepo(CLONE_FAILED_COPY) from None
-    sha = sha_proc.stdout.strip()
-    if sha_proc.returncode != 0 or not sha:
+    return proc.stdout
+
+
+def _github_remote(url: str) -> str:
+    owner, repo = parse_github_url(url)
+    return f"https://github.com/{owner}/{repo}.git"
+
+
+def ls_remote_head(remote: str) -> str:
+    """The commit `remote`'s HEAD points at, without cloning anything."""
+    out = _git(["ls-remote", remote, "HEAD"], timeout=LS_REMOTE_TIMEOUT_S)
+    first = out.split("\n", 1)[0].split("\t", 1)[0].strip().lower()
+    if not _SHA_RE.match(first):
+        raise UnsupportedRepo(CLONE_FAILED_COPY)
+    return first
+
+
+def resolve_head(url: str) -> str:
+    """The commit a public GitHub repo's default branch is at: the cache key for its analysis."""
+    return ls_remote_head(_github_remote(url))
+
+
+def _rev_parse_head(dest: Path) -> str:
+    sha = _git(["-C", str(dest), "rev-parse", "HEAD"]).strip()
+    if not sha:
+        raise UnsupportedRepo(CLONE_FAILED_COPY)
+    return sha
+
+
+def fetch_commit(remote: str, dest: Path, sha: str) -> Workspace:
+    """Exactly commit `sha` of `remote` in `dest`, history depth 1, symlinks checked out as files."""
+    no_links = ["-c", "core.symlinks=false"]
+    _git([*no_links, "init", "-q", str(dest)])
+    _git([*no_links, "-C", str(dest), "fetch", "-q", "--depth", "1", "--no-tags", remote, sha])
+    _git([*no_links, "-C", str(dest), "checkout", "-q", "--detach", "FETCH_HEAD"])
+    if _rev_parse_head(dest) != sha:
         raise UnsupportedRepo(CLONE_FAILED_COPY)
     return load_workspace(dest, sha)
+
+
+def clone_repo(url: str, dest: Path, sha: str | None = None) -> Workspace:
+    """A shallow clone of a public GitHub repo: at `sha` when given, else its default branch."""
+    remote = _github_remote(url)
+    if sha is not None:
+        return fetch_commit(remote, dest, sha)
+    _git(
+        [
+            "-c",
+            "core.symlinks=false",
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            remote,
+            str(dest),
+        ]
+    )
+    return load_workspace(dest, _rev_parse_head(dest))
 
 
 def detect_stack(ws: Workspace) -> Stack:

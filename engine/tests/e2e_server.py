@@ -6,7 +6,9 @@ Run from engine/: `uv run python -m tests.e2e_server`. Stub repos:
 - https://github.com/heist-fixtures/no-rules-app -> tests/fixtures/vuln_app without supabase/migrations
 - https://github.com/heist-fixtures/partial-rules-app -> tests/fixtures/clean_app plus an unreadable migration
 - https://github.com/heist-fixtures/plain-vite -> a Vite app without Supabase (unsupported)
-Any other GitHub URL fails like a bad clone, so nothing ever reaches GitHub.
+Any other GitHub URL fails like a bad clone, so nothing ever reaches GitHub. `git ls-remote` is
+stubbed too: every run reports a new commit, so the cache never short-cuts a test's run, and
+the rate limit is raised so a whole e2e suite fits in one hour.
 
 `HEIST_E2E_DELAY` (seconds, default 1) holds the run while cloning, after mapping and after
 sorting the findings, so the live map can be seen lighting up. `HEIST_E2E_PORT` defaults to 8010.
@@ -21,11 +23,13 @@ from typing import Any
 
 import uvicorn
 
-from heist import pipeline
+from heist import fetch, pipeline
 from heist.api import ApiConfig, create_app, parse_prover
+from heist.guards import RateLimiter
 
 from .stub_repos import (
     FIXTURES_DIR,
+    fresh_sha_resolve,
     make_stub_clone,
     stub_url,
     write_no_rules_app,
@@ -57,6 +61,7 @@ def main() -> None:
         stub_url("no-rules-app"): no_rules,
         stub_url("partial-rules-app"): partial_rules,
     }
+    fetch.resolve_head = fresh_sha_resolve()
     pipeline.clone_repo = _slowed(make_stub_clone(repos), delay)
     pipeline.run_detectors = _slowed(pipeline.run_detectors, delay)
     pipeline._trace_all = _slowed(pipeline._trace_all, delay)  # pyright: ignore[reportPrivateUsage]
@@ -66,7 +71,8 @@ def main() -> None:
         origins=[o.strip() for o in origins.split(",") if o.strip()],
         prover=parse_prover(os.environ.get("HEIST_PROVER")),
     )
-    uvicorn.run(create_app(config), host="127.0.0.1", port=port, log_level="warning")
+    app = create_app(config, rate_limiter=RateLimiter(limit=10_000))
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
 if __name__ == "__main__":

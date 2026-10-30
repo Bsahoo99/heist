@@ -1,11 +1,21 @@
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from heist import fetch
-from heist.fetch import UnsupportedRepo, clone_repo, detect_stack, load_workspace, parse_github_url
+from heist.fetch import (
+    UnsupportedRepo,
+    clone_repo,
+    detect_stack,
+    fetch_commit,
+    load_workspace,
+    ls_remote_head,
+    parse_github_url,
+)
+from heist.fetch import resolve_head as real_resolve_head  # bound before conftest stubs it
 from heist.models import AppGraph, CodeRef, Node
 
 
@@ -169,3 +179,133 @@ def test_rev_parse_failure_raises_unsupported(monkeypatch, vuln_app_path, tmp_pa
     monkeypatch.setattr(fetch.subprocess, "run", fake_run)
     with pytest.raises(UnsupportedRepo, match="couldn't fetch"):
         clone_repo("https://github.com/acme/pawpal", dest)
+
+
+# ---------------------------------------------------------------------------------------------
+# The commit: `git ls-remote` before cloning, then a clone at exactly that commit
+
+SHA = "c" * 40
+
+
+def _git(*args: str, cwd: Path) -> str:
+    cmd = ["git", "-c", "user.name=Heist", "-c", "user.email=heist@example.test"]
+    cmd += ["-c", "commit.gpgsign=false", *args]
+    return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture
+def origin(tmp_path: Path) -> tuple[Path, list[str]]:
+    """A local repo with two commits; any commit can be fetched by its SHA."""
+    repo = tmp_path / "origin"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=repo)
+    shas = []
+    for n in (1, 2):
+        (repo / "app.ts").write_text(f"export const version = {n};\n")
+        _git("add", "app.ts", cwd=repo)
+        _git("commit", "-q", "-m", f"v{n}", cwd=repo)
+        shas.append(_git("rev-parse", "HEAD", cwd=repo))
+    return repo, shas
+
+
+def test_ls_remote_reads_head(origin):
+    repo, shas = origin
+    assert ls_remote_head(str(repo)) == shas[1]
+
+
+def test_ls_remote_of_a_missing_repo_fails_like_a_bad_clone(tmp_path):
+    with pytest.raises(UnsupportedRepo, match="couldn't fetch"):
+        ls_remote_head(str(tmp_path / "missing"))
+
+
+def test_resolve_head_asks_github_without_prompting(monkeypatch):
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(cmd=cmd, **kwargs)
+        return subprocess.CompletedProcess(cmd, 0, f"{SHA}\tHEAD\n", "")
+
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    assert real_resolve_head("github.com/Acme/PawPal.git") == SHA
+    assert seen["cmd"] == ["git", "ls-remote", "https://github.com/Acme/PawPal.git", "HEAD"]
+    assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert seen["timeout"] == 15
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        subprocess.CompletedProcess([], 128, "", "fatal: repository not found"),
+        subprocess.CompletedProcess([], 0, "", ""),
+        subprocess.CompletedProcess([], 0, "not-a-sha\tHEAD\n", ""),
+        subprocess.TimeoutExpired("git", 15),
+        OSError("no git"),
+    ],
+)
+def test_resolve_head_failures_say_we_could_not_fetch(monkeypatch, outcome):
+    def fake_run(cmd, **kwargs):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    with pytest.raises(UnsupportedRepo, match="couldn't fetch"):
+        real_resolve_head("https://github.com/acme/pawpal")
+
+
+def test_resolve_head_only_takes_github_urls(monkeypatch):
+    monkeypatch.setattr(fetch.subprocess, "run", lambda *a, **k: pytest.fail("ran git"))
+    with pytest.raises(UnsupportedRepo, match="public GitHub"):
+        real_resolve_head("/etc")
+
+
+def test_fetch_commit_checks_out_exactly_that_commit(origin, tmp_path):
+    repo, shas = origin
+    ws = fetch_commit(str(repo), tmp_path / "dest", shas[0])
+    assert ws.commit_sha == shas[0]
+    assert (ws.root / "app.ts").read_text() == "export const version = 1;\n"
+
+
+def test_fetch_commit_of_an_unknown_commit_fails(origin, tmp_path):
+    repo, _ = origin
+    with pytest.raises(UnsupportedRepo, match="couldn't fetch"):
+        fetch_commit(str(repo), tmp_path / "dest", "d" * 40)
+
+
+def test_clone_at_a_sha_fetches_it_without_symlinks(monkeypatch, vuln_app_path, tmp_path):
+    dest = tmp_path / "dest"
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+        if "init" in cmd:
+            shutil.copytree(vuln_app_path, dest)
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, f"{SHA}\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    ws = clone_repo("https://github.com/acme/pawpal", dest, SHA)
+    assert ws.commit_sha == SHA
+    fetch_cmd = next(c for c in calls if "fetch" in c)
+    assert fetch_cmd[-2:] == ["https://github.com/acme/pawpal.git", SHA]
+    checkout = next(c for c in calls if "checkout" in c)
+    assert "core.symlinks=false" in checkout
+    assert checkout.index("core.symlinks=false") < checkout.index("checkout")
+
+
+def test_clone_at_a_sha_refuses_a_different_head(monkeypatch, vuln_app_path, tmp_path):
+    dest = tmp_path / "dest"
+
+    def fake_run(cmd, **kwargs):
+        if "init" in cmd:
+            shutil.copytree(vuln_app_path, dest)
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "e" * 40 + "\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    with pytest.raises(UnsupportedRepo, match="couldn't fetch"):
+        clone_repo("https://github.com/acme/pawpal", dest, SHA)

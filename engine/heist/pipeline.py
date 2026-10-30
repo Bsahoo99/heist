@@ -51,12 +51,13 @@ def _is_github_url(source: str) -> bool:
     return True
 
 
-def _fetch(source: str, stack: ExitStack) -> tuple[Workspace, str]:
+def _fetch(source: str, stack: ExitStack, sha: str | None) -> tuple[Workspace, str]:
     """The workspace and the repo name shown in the Scene. Clones live in a temp dir."""
     if _is_github_url(source):
         owner, repo = parse_github_url(source)
         tmp = stack.enter_context(tempfile.TemporaryDirectory(prefix="heist-"))
-        return clone_repo(source, Path(tmp) / "repo"), f"https://github.com/{owner}/{repo}"
+        ws = clone_repo(source, Path(tmp) / "repo", sha)
+        return ws, f"https://github.com/{owner}/{repo}"
     path = Path(source)
     if not path.is_dir():
         raise UnsupportedRepo(BAD_URL_COPY)
@@ -147,9 +148,10 @@ def _analyze(
     prove: Prove | None,
     analyzed_at: datetime | None,
     stack: ExitStack,
+    sha: str | None,
 ) -> Scene:
     _stage(emit, "Fetching the repo")
-    ws, repo = _fetch(source, stack)
+    ws, repo = _fetch(source, stack, sha)
     app_stack = detect_stack(ws)
 
     _stage(emit, "Mapping the app")
@@ -199,15 +201,17 @@ def run_analysis(
     prove: Prove | None = None,
     *,
     analyzed_at: datetime | None = None,
+    sha: str | None = None,
 ) -> Scene:
     """Analyze a GitHub URL or a local directory (local paths only from the CLI and tests).
 
     `client=None` is offline mode: no triage, and every finding uses the template trace.
+    `sha` clones a GitHub repo at exactly that commit (the API's cache key); else its HEAD.
     Errors are reported as an `error` event and then re-raised.
     """
     try:
         with ExitStack() as stack:
-            return _analyze(source, emit, client, prove, analyzed_at, stack)
+            return _analyze(source, emit, client, prove, analyzed_at, stack, sha)
     except UnsupportedRepo as exc:
         emit(ProgressEvent(kind="error", message=exc.reason))
         raise

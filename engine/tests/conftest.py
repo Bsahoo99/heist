@@ -6,7 +6,17 @@ from typing import Any
 
 import pytest
 
+from heist import fetch
+
+from .stub_repos import stub_resolve
+
 FIXTURES_DIR = Path(__file__).parent.resolve() / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def offline_ls_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test asks GitHub for a commit: stub repos resolve to STUB_SHA, any other URL fails."""
+    monkeypatch.setattr(fetch, "resolve_head", stub_resolve)
 
 
 @pytest.fixture

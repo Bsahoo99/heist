@@ -1,40 +1,61 @@
 """HTTP API: start an analysis, stream its progress, read its Scene.
 
 Run with `uv run uvicorn heist.api:app --port 8000`. Each analysis runs `run_analysis` in a
-worker thread (at most `MAX_RUNNING` at once; later ones wait their turn) and keeps an
+worker thread (at most `MAX_RUNNING` at once; later ones wait their turn) and keeps a live
 in-memory record: its status, an append-only event log, and the Scene or the error copy.
+
+Starting an analysis first asks GitHub which commit the repo is at (`git ls-remote`). The same
+repo at the same commit is never analyzed twice: a finished run is served from the cache
+(`cached: true`), and a running one is joined. Only new runs pass the guards: a full registry,
+the daily spend cap and the per-client rate limit. Finished and failed runs are written to the
+`Store` (Heist's Supabase in production), so results outlive the process.
 """
 
 import asyncio
-import secrets
+import logging
+import re
 import sys
 from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sse_starlette import EventSourceResponse
 
+from heist import fetch
 from heist.cli import ENV_PATH, NO_KEY_COPY
-from heist.fetch import UnsupportedRepo, parse_github_url
+from heist.fetch import CLONE_FAILED_COPY, UnsupportedRepo, parse_github_url
+from heist.guards import (
+    RATE_LIMIT_COPY,
+    SPEND_CAP_COPY,
+    RateLimiter,
+    SpendCap,
+    client_ip,
+)
 from heist.llm.client import MetaClient
 from heist.llm.config import env, load_env
 from heist.models import ProgressEvent
 from heist.pipeline import GENERIC_ERROR_COPY, Prove, run_analysis
 from heist.prove.sandbox import Prover, prove_local, prove_rls, warm_in_background
 from heist.scene import Scene
+from heist.store import MemoryStore, Store, new_id, repo_key, store_from_env
+
+log = logging.getLogger(__name__)
 
 MAX_RUNNING = 2
 MAX_RECORDS = 50
 DEFAULT_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 NOT_FOUND_COPY = "This analysis is gone. Run it again."
 QUEUED_COPY = "Waiting for a free crew"
+BUSY_COPY = "Heist is busy with other heists right now. Try again in a few minutes."
+BAD_HOPS_COPY = "HEIST_TRUSTED_PROXY_HOPS must be a whole number, 0 or more."
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # ids are `secrets.token_urlsafe(9)`
 
 Status = Literal["running", "done", "error"]
 PROVERS: tuple[Prover, ...] = ("modal", "docker")
@@ -52,6 +73,16 @@ def parse_prover(raw: str | None) -> Prover | None:
     raise SystemExit(BAD_PROVER_COPY)
 
 
+def parse_hops(raw: str | None) -> int:
+    """`HEIST_TRUSTED_PROXY_HOPS`: proxies of our own in front of the engine (see `client_ip`)."""
+    value = (raw or "").strip()
+    if not value:
+        return 0
+    if not value.isdigit():
+        raise SystemExit(BAD_HOPS_COPY)
+    return int(value)
+
+
 def prover_fn(prover: Prover | None) -> Prove | None:
     if prover is None:
         return None
@@ -63,12 +94,14 @@ class ApiConfig:
     offline: bool
     origins: list[str]
     prover: Prover | None = None
+    trusted_proxy_hops: int = 0
 
     @classmethod
     def from_env(cls) -> "ApiConfig":
         """`HEIST_OFFLINE=1` runs with template traces; otherwise a model key is required.
 
         `HEIST_PROVER` picks where RLS proofs run (see `parse_prover`); unset proves nothing.
+        `HEIST_TRUSTED_PROXY_HOPS` is 0 (unset) on Modal and locally (see `client_ip`).
         """
         load_env(ENV_PATH)
         offline = env("HEIST_OFFLINE") == "1"
@@ -76,7 +109,12 @@ class ApiConfig:
             raise SystemExit(NO_KEY_COPY)
         raw = env("HEIST_WEB_ORIGINS")
         origins = [o.strip() for o in raw.split(",") if o.strip()] if raw else DEFAULT_ORIGINS
-        return cls(offline=offline, origins=origins, prover=parse_prover(env("HEIST_PROVER")))
+        return cls(
+            offline=offline,
+            origins=origins,
+            prover=parse_prover(env("HEIST_PROVER")),
+            trusted_proxy_hops=parse_hops(env("HEIST_TRUSTED_PROXY_HOPS")),
+        )
 
 
 @dataclass(eq=False)
@@ -85,6 +123,7 @@ class AnalysisRecord:
 
     id: str
     url: str
+    sha: str = ""
     status: Status = "running"
     events: list[ProgressEvent] = field(default_factory=list)
     scene: Scene | None = None
@@ -116,30 +155,44 @@ class AnalysisRecord:
         self._subscribers.discard(q)
 
 
-class AnalysisStore:
-    """The most recent analyses, in memory. Task 18 swaps in a persistent store behind this."""
+class RegistryFull(Exception):
+    """Every live record is still running; none may be dropped."""
+
+
+class LiveRegistry:
+    """The most recent analyses with their live state, in memory, on the event loop thread.
+
+    A running record is never dropped (its worker and subscribers still need it), so when every
+    slot is running a new analysis is refused. Finished records go oldest first; the `Store`
+    still has them.
+    """
 
     def __init__(self, limit: int = MAX_RECORDS):
         self.limit = limit
         self._records: OrderedDict[str, AnalysisRecord] = OrderedDict()
 
+    def has_room(self) -> bool:
+        return len(self._records) < self.limit or any(
+            r.status != "running" for r in self._records.values()
+        )
+
     def add(self, record: AnalysisRecord) -> None:
+        if not self.has_room():
+            raise RegistryFull
         self._records[record.id] = record
         while len(self._records) > self.limit:
-            # Drop the oldest finished record; if every one is still running, the oldest.
-            done = next((r for r in self._records.values() if r.status != "running"), None)
-            victim = done or next(iter(self._records.values()))
-            del self._records[victim.id]
+            done = next(r for r in self._records.values() if r.status != "running")
+            del self._records[done.id]
 
     def get(self, aid: str) -> AnalysisRecord | None:
         return self._records.get(aid)
 
-    def running_for(self, url: str) -> AnalysisRecord | None:
-        key = url.lower()
-        return next(
-            (r for r in self._records.values() if r.status == "running" and r.url.lower() == key),
-            None,
-        )
+    def find(self, repo: str, sha: str) -> AnalysisRecord | None:
+        """A running or finished record of this repo (a `repo_key`) at this commit."""
+        for r in reversed(self._records.values()):
+            if r.status != "error" and r.sha == sha and repo_key(r.url) == repo:
+                return r
+        return None
 
     def records(self) -> list[AnalysisRecord]:
         return list(self._records.values())
@@ -149,8 +202,22 @@ class StartIn(BaseModel):
     url: str
 
 
+def _safely[T](op: str, fn: Callable[..., T], *args: Any) -> T | None:
+    """A store call that can never sink an analysis: failures are logged by type only."""
+    try:
+        return fn(*args)
+    except Exception as exc:  # noqa: BLE001 - the store is a cache, not a dependency
+        log.warning("store %s failed: %s", op, type(exc).__name__)
+        return None
+
+
 def _work(
-    record: AnalysisRecord, loop: asyncio.AbstractEventLoop, offline: bool, prove: Prove | None
+    record: AnalysisRecord,
+    loop: asyncio.AbstractEventLoop,
+    offline: bool,
+    prove: Prove | None,
+    store: Store,
+    spend_cap: SpendCap,
 ) -> None:
     """Runs in a worker thread. Every record change is handed to the event loop."""
     terminal: list[ProgressEvent] = []
@@ -161,25 +228,30 @@ def _work(
         else:
             loop.call_soon_threadsafe(record.publish, e)
 
+    _safely("create", store.create, repo_key(record.url), record.sha, record.id)
     client: MetaClient | None = None
     try:
         # One client per analysis: clients are not shared across threads. Built inside the
         # try, so a failure here still ends the record instead of leaving it running.
         client = None if offline else MetaClient.from_env()
-        scene = run_analysis(record.url, emit, client, prove)
+        scene = run_analysis(record.url, emit, client, prove, sha=record.sha or None)
     except Exception as exc:  # noqa: BLE001 - the pipeline already emitted the error copy
         reason = exc.reason if isinstance(exc, UnsupportedRepo) else GENERIC_ERROR_COPY
         error = next((e for e in terminal if e.kind == "error"), None)
-        loop.call_soon_threadsafe(record.fail, error or ProgressEvent(kind="error", message=reason))
+        error = error or ProgressEvent(kind="error", message=reason)
+        loop.call_soon_threadsafe(record.fail, error)
+        _safely("fail", store.fail, record.id, error.message)
     else:
         done = next((e for e in terminal if e.kind == "done"), None)
         loop.call_soon_threadsafe(
             record.finish, scene, done or ProgressEvent(kind="done", message="Done")
         )
+        _safely("finish", store.finish, record.id, scene)
     finally:
         if client is not None:
             spend = client.tracker.total_usd
             loop.call_soon_threadsafe(setattr, record, "spend_usd", spend)
+            spend_cap.record(spend)
             print(f"[heist] analysis {record.id} model spend: ${spend:.4f}", file=sys.stderr)
 
 
@@ -187,8 +259,28 @@ def _error(status: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
-def create_app(config: ApiConfig) -> FastAPI:
-    store = AnalysisStore()
+def _done_event(scene: Scene) -> ProgressEvent:
+    data: dict[str, Any] = {
+        "findings": len(scene.findings),
+        "checks_held": scene.meta.checks_held,
+        "checks_tested": scene.meta.checks_tested,
+    }
+    return ProgressEvent(kind="done", message="Done", data=data)
+
+
+def create_app(
+    config: ApiConfig,
+    *,
+    store: Store | None = None,
+    rate_limiter: RateLimiter | None = None,
+    spend_cap: SpendCap | None = None,
+    max_records: int = MAX_RECORDS,
+) -> FastAPI:
+    """The engine app. `store` defaults to memory; `store_from_env()` picks Supabase."""
+    kept: Store = store if store is not None else MemoryStore()
+    limiter = rate_limiter if rate_limiter is not None else RateLimiter()
+    cap = spend_cap if spend_cap is not None else SpendCap(ledger=kept)
+    registry = LiveRegistry(max_records)
     prove = prover_fn(config.prover)
     pool = ThreadPoolExecutor(max_workers=MAX_RUNNING, thread_name_prefix="heist-analysis")
     tasks: set[asyncio.Future[None]] = set()  # submitted and not finished: running or queued
@@ -209,31 +301,80 @@ def create_app(config: ApiConfig) -> FastAPI:
         allow_headers=["Content-Type"],
     )
 
+    def live_answer(repo: str, sha: str) -> dict[str, Any] | None:
+        record = registry.find(repo, sha)
+        if record is None:
+            return None
+        return {"id": record.id, "cached": record.status == "done"}
+
     @app.post("/analyses")
-    async def start(body: StartIn) -> Any:
+    async def start(body: StartIn, request: Request) -> Any:
         # Only public GitHub URLs reach the pipeline, which also reads local paths.
         try:
-            owner, repo = parse_github_url(body.url)
+            owner, name = parse_github_url(body.url)
         except UnsupportedRepo as exc:
             return _error(400, exc.reason)
-        url = f"https://github.com/{owner}/{repo}"
-        running = store.running_for(url)
-        if running is not None:
-            return {"id": running.id, "cached": False}
-        record = AnalysisRecord(id=secrets.token_urlsafe(9), url=url)
-        store.add(record)
+        url = f"https://github.com/{owner}/{name}"
+        repo = repo_key(url)
+        try:
+            sha = await asyncio.to_thread(fetch.resolve_head, url)
+        except UnsupportedRepo as exc:
+            return _error(400, exc.reason)
+        except Exception as exc:  # noqa: BLE001 - whatever went wrong, the repo was not fetched
+            log.warning("resolving the commit failed: %s", type(exc).__name__)
+            return _error(400, CLONE_FAILED_COPY)
+
+        if (answer := live_answer(repo, sha)) is not None:
+            return answer
+        cached = await asyncio.to_thread(_safely, "lookup", kept.get_by_repo_sha, repo, sha)
+        if cached is not None:
+            return {"id": cached, "cached": True}
+        allowed = await asyncio.to_thread(cap.allow)
+        # No awaits from here on: the checks and the new record are one step on the loop, so
+        # two requests for the same commit cannot both start a run.
+        if (answer := live_answer(repo, sha)) is not None:
+            return answer
+        if not registry.has_room():
+            return _error(429, BUSY_COPY)
+        if not allowed:
+            return _error(503, SPEND_CAP_COPY)
+        if not limiter.allow(client_ip(request, config.trusted_proxy_hops)):
+            return _error(429, RATE_LIMIT_COPY)
+
+        record = AnalysisRecord(id=new_id(), url=url, sha=sha)
+        registry.add(record)
         if len(tasks) >= MAX_RUNNING:
             # Every worker is busy: say so, or the page would only show "connecting".
             record.publish(ProgressEvent(kind="stage", message=QUEUED_COPY))
         loop = asyncio.get_running_loop()
-        task = loop.run_in_executor(pool, _work, record, loop, config.offline, prove)
+        task = loop.run_in_executor(
+            pool, _work, record, loop, config.offline, prove, kept, cap
+        )
         tasks.add(task)
         task.add_done_callback(tasks.discard)
         return {"id": record.id, "cached": False}
 
+    async def lookup(aid: str) -> AnalysisRecord | None:
+        """The live record, else a finished one rebuilt from the store (after a restart)."""
+        if not ID_RE.match(aid):
+            return None
+        record = registry.get(aid)
+        if record is not None:
+            return record
+        saved = await asyncio.to_thread(_safely, "get", kept.get, aid)
+        if saved is None or saved.status == "running":
+            return None  # a run that was cut off with its process is gone: run it again
+        url = saved.scene.meta.repo if saved.scene else saved.repo
+        rebuilt = AnalysisRecord(id=saved.id, url=url, sha=saved.sha)
+        if saved.scene is not None:
+            rebuilt.finish(saved.scene, _done_event(saved.scene))
+        else:
+            rebuilt.fail(ProgressEvent(kind="error", message=saved.error or GENERIC_ERROR_COPY))
+        return rebuilt
+
     @app.get("/analyses/{aid}")
     async def get(aid: str) -> Any:
-        record = store.get(aid)
+        record = await lookup(aid)
         if record is None:
             return _error(404, NOT_FOUND_COPY)
         return {
@@ -245,7 +386,7 @@ def create_app(config: ApiConfig) -> FastAPI:
 
     @app.get("/analyses/{aid}/events")
     async def events(aid: str) -> Any:
-        record = store.get(aid)
+        record = await lookup(aid)
         if record is None:
             return _error(404, NOT_FOUND_COPY)
 
@@ -272,7 +413,7 @@ def create_app(config: ApiConfig) -> FastAPI:
 def __getattr__(name: str) -> FastAPI:
     """`heist.api:app`, built on first use so importing this module reads no environment."""
     if name == "app":
-        built = create_app(ApiConfig.from_env())
+        built = create_app(ApiConfig.from_env(), store=store_from_env())
         globals()["app"] = built
         return built
     raise AttributeError(name)

@@ -8,13 +8,19 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from heist.fetch import CLONE_FAILED_COPY, UnsupportedRepo, Workspace, load_workspace
+from heist.fetch import (
+    CLONE_FAILED_COPY,
+    UnsupportedRepo,
+    Workspace,
+    load_workspace,
+    parse_github_url,
+)
 
 FIXTURES_DIR = Path(__file__).parent.resolve() / "fixtures"
 STUB_OWNER = "heist-fixtures"
 STUB_SHA = "0" * 40
 
-CloneRepo = Callable[[str, Path], Workspace]
+CloneRepo = Callable[[str, Path, str | None], Workspace]
 
 
 def stub_url(name: str) -> str:
@@ -52,13 +58,36 @@ def make_stub_clone(repos: dict[str, Path], gate: threading.Event | None = None)
     """
     by_url = {url.lower(): path for url, path in repos.items()}
 
-    def clone(url: str, dest: Path) -> Workspace:
+    def clone(url: str, dest: Path, sha: str | None = None) -> Workspace:
         if gate is not None:
             gate.wait(timeout=30)
         src = by_url.get(url.strip().lower().removesuffix("/"))
         if src is None:
             raise UnsupportedRepo(CLONE_FAILED_COPY)
         shutil.copytree(src, dest)
-        return load_workspace(dest, STUB_SHA)
+        return load_workspace(dest, sha or STUB_SHA)
 
     return clone
+
+
+def stub_resolve(url: str) -> str:
+    """`resolve_head` without the network: stub repos are at STUB_SHA, anything else fails."""
+    owner, _ = parse_github_url(url)
+    if owner.lower() != STUB_OWNER:
+        raise UnsupportedRepo(CLONE_FAILED_COPY)
+    return STUB_SHA
+
+
+def fresh_sha_resolve() -> Callable[[str], str]:
+    """`resolve_head` that reports a new commit every time, so nothing is ever served cached."""
+    count = 0
+    lock = threading.Lock()
+
+    def resolve(url: str) -> str:
+        nonlocal count
+        stub_resolve(url)
+        with lock:
+            count += 1
+            return f"{count:040x}"
+
+    return resolve
