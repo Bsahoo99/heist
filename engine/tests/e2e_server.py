@@ -8,6 +8,7 @@ Any other GitHub URL fails like a bad clone, so nothing ever reaches GitHub.
 
 `HEIST_E2E_DELAY` (seconds, default 1) holds the run while cloning, after mapping and after
 sorting the findings, so the live map can be seen lighting up. `HEIST_E2E_PORT` defaults to 8010.
+`HEIST_PROVER` works as in the real engine (unset: no proofs).
 """
 
 import os
@@ -19,7 +20,7 @@ from typing import Any
 import uvicorn
 
 from heist import pipeline
-from heist.api import ApiConfig, create_app
+from heist.api import ApiConfig, create_app, parse_prover
 
 from .stub_repos import FIXTURES_DIR, make_stub_clone, stub_url, write_plain_vite_app
 
@@ -46,7 +47,11 @@ def main() -> None:
     pipeline.run_detectors = _slowed(pipeline.run_detectors, delay)
     pipeline._trace_all = _slowed(pipeline._trace_all, delay)  # pyright: ignore[reportPrivateUsage]
 
-    config = ApiConfig(offline=True, origins=[o.strip() for o in origins.split(",") if o.strip()])
+    config = ApiConfig(
+        offline=True,
+        origins=[o.strip() for o in origins.split(",") if o.strip()],
+        prover=parse_prover(os.environ.get("HEIST_PROVER")),
+    )
     uvicorn.run(create_app(config), host="127.0.0.1", port=port, log_level="warning")
 
 

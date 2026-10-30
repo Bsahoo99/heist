@@ -262,3 +262,68 @@ def test_offline_config_default_origins(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("HEIST_WEB_ORIGINS", raising=False)
     origins = ApiConfig.from_env().origins
     assert origins == ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [(None, None), ("", None), ("modal", "modal"), ("docker", "docker"), (" Docker ", "docker")],
+)
+def test_prover_comes_from_heist_prover(monkeypatch: pytest.MonkeyPatch, raw, want):
+    from heist import api
+
+    monkeypatch.setattr(api, "load_env", lambda path: None)
+    monkeypatch.setenv("HEIST_OFFLINE", "1")
+    if raw is None:
+        monkeypatch.delenv("HEIST_PROVER", raising=False)
+    else:
+        monkeypatch.setenv("HEIST_PROVER", raw)
+    assert ApiConfig.from_env().prover == want
+
+
+def test_unknown_prover_refuses_to_start(monkeypatch: pytest.MonkeyPatch):
+    from heist import api
+
+    monkeypatch.setattr(api, "load_env", lambda path: None)
+    monkeypatch.setenv("HEIST_OFFLINE", "1")
+    monkeypatch.setenv("HEIST_PROVER", "lambda")
+    with pytest.raises(SystemExit, match=api.BAD_PROVER_COPY):
+        ApiConfig.from_env()
+
+
+def test_prover_names_map_to_the_sandboxes():
+    from heist.api import prover_fn
+    from heist.prove.sandbox import prove_local, prove_rls
+
+    assert prover_fn(None) is None
+    assert prover_fn("modal") is prove_rls
+    assert prover_fn("docker") is prove_local
+
+
+async def test_the_chosen_prover_runs_and_proves(monkeypatch: pytest.MonkeyPatch, clones):
+    from heist import api
+    from heist.scene import ProofRow
+
+    asked: list[list[str]] = []
+    row = ProofRow(as_who="anonymous", table="messages", row={"body": "Fake note for testing"})
+
+    def fake_local(db, ws, tables):
+        asked.append(tables)
+        return {"messages": [row]}
+
+    monkeypatch.setattr(api, "prove_local", fake_local)
+    app = create_app(ApiConfig(offline=True, origins=[], prover="docker"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        aid = await start(c, VULN_URL)
+        await wait_done(c, aid)
+        scene = (await c.get(f"/analyses/{aid}")).json()["scene"]
+    assert asked == [["adoption_requests", "messages"]]
+    first = scene["findings"][0]
+    assert first["id"] == "m3-messages" and first["status"] == "proved"
+    assert first["proof_rows"] == [row.model_dump()]
+
+
+async def test_no_prover_proves_nothing(client, vuln_app_url_stub):
+    aid = await start(client, vuln_app_url_stub)
+    await wait_done(client, aid)
+    scene = (await client.get(f"/analyses/{aid}")).json()["scene"]
+    assert all(f["status"] != "proved" for f in scene["findings"])

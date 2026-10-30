@@ -30,6 +30,8 @@ from heist.scene import ProofRow, Scene, SceneMeta, build_scene
 log = logging.getLogger(__name__)
 
 Emit = Callable[[ProgressEvent], None]
+# A prover gets the tables to prove (deduplicated, in finding order) and returns proof rows by
+# table. A table it could not prove is missing or empty; it may raise, which proves nothing.
 Prove = Callable[[DbSchema, Workspace, list[str]], dict[str, list[ProofRow]]]
 
 TRACE_WORKERS = 4
@@ -110,17 +112,22 @@ def _trace_all(
 def _prove(
     prove: Prove | None, g: AppGraph, ws: Workspace, findings: list[Finding]
 ) -> dict[str, list[ProofRow]]:
+    """Proof rows by finding id. The prover thinks in tables, so this maps both ways."""
     # Only confirmed leaks are proved: a "possible" finding (often meant to be public) never is.
-    ids = [f.id for f in findings if f.mistake == PROVED_MISTAKE and f.status == "confirmed"]
-    if prove is None or g.db is None or not ids:
+    table_of: dict[str, str] = {}
+    for f in findings:
+        table = f.evidence.get("table")
+        if f.mistake == PROVED_MISTAKE and f.status == "confirmed" and isinstance(table, str):
+            table_of[f.id] = table
+    tables = list(dict.fromkeys(table_of.values()))
+    if prove is None or g.db is None or not tables:
         return {}
     try:
-        rows = prove(g.db, ws, ids)
+        rows = prove(g.db, ws, tables)
     except Exception as exc:  # noqa: BLE001 - a failed proof leaves the finding confirmed
         log.warning("proof failed, findings stay confirmed: %s", type(exc).__name__)
         return {}
-    wanted = set(ids)
-    return {fid: list(r) for fid, r in rows.items() if fid in wanted and r}
+    return {fid: list(rows[t]) for fid, t in table_of.items() if rows.get(t)}
 
 
 def _with_refs(findings: list[Finding]) -> list[Finding]:

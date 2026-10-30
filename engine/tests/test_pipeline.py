@@ -238,12 +238,12 @@ def test_step_ref_prefers_node_range(vuln_app_path):
 def test_prove_errors_leave_findings_confirmed(vuln_app_path):
     seen: list[list[str]] = []
 
-    def prove(db: DbSchema, ws: Workspace, ids: list[str]) -> dict[str, list[ProofRow]]:
-        seen.append(ids)
+    def prove(db: DbSchema, ws: Workspace, tables: list[str]) -> dict[str, list[ProofRow]]:
+        seen.append(tables)
         raise RuntimeError("sandbox down")
 
     s = run_analysis(str(vuln_app_path), lambda e: None, None, prove)
-    assert seen and all(i.startswith("m3-") for i in seen[0])
+    assert seen == [["adoption_requests", "messages"]]
     assert not any(f.status == "proved" for f in s.findings)
     assert next(f for f in s.findings if f.id == "m3-messages").status == "confirmed"
 
@@ -251,8 +251,8 @@ def test_prove_errors_leave_findings_confirmed(vuln_app_path):
 def test_prove_rows_make_finding_proved_and_first(vuln_app_path):
     row = ProofRow(as_who="anonymous", table="messages", row={"body": "Test Alice says hi"})
 
-    def prove(db: DbSchema, ws: Workspace, ids: list[str]) -> dict[str, list[ProofRow]]:
-        return {"m3-messages": [row]}
+    def prove(db: DbSchema, ws: Workspace, tables: list[str]) -> dict[str, list[ProofRow]]:
+        return {"messages": [row]}
 
     s = run_analysis(str(vuln_app_path), lambda e: None, None, prove)
     assert s.findings[0].id == "m3-messages"
@@ -260,13 +260,44 @@ def test_prove_rows_make_finding_proved_and_first(vuln_app_path):
     assert s.findings[0].proof_rows == [row]
 
 
+def test_pipeline_keeps_confirmed_when_proof_fails(vuln_app_path, fake_client):
+    s = run_analysis(str(vuln_app_path), lambda e: None, fake_client, prove=lambda *a: {})
+    assert all(f.status != "proved" for f in s.findings)
+    assert next(f for f in s.findings if f.id == "m3-messages").status == "confirmed"
+
+
+def test_prove_rows_map_back_to_every_finding_on_the_table(vuln_app_path, monkeypatch):
+    real = pipeline.run_detectors
+
+    def doubled(ws, g):
+        out = real(ws, g)
+        f = next(x for x in out if x.id == "m3-messages")
+        twin = f.model_copy(update={"id": "m3-messages-twin"})
+        return [*out, twin]
+
+    monkeypatch.setattr(pipeline, "run_detectors", doubled)
+    seen: list[list[str]] = []
+    row = ProofRow(as_who="anonymous", table="messages", row={"body": "Fake note for testing"})
+
+    def prove(db: DbSchema, ws: Workspace, tables: list[str]) -> dict[str, list[ProofRow]]:
+        seen.append(tables)
+        return {"messages": [row]}
+
+    s = run_analysis(str(vuln_app_path), lambda e: None, None, prove)
+    assert seen == [["adoption_requests", "messages"]]
+    for fid in ("m3-messages", "m3-messages-twin"):
+        f = next(f for f in s.findings if f.id == fid)
+        assert f.status == "proved" and f.proof_rows == [row]
+    assert next(f for f in s.findings if f.id == "m3-adoption_requests").status == "confirmed"
+
+
 def test_prove_skipped_without_rules(tmp_copy, vuln_app_path):
     root = tmp_copy(vuln_app_path)
     shutil.rmtree(root / "supabase/migrations")
     calls = []
 
-    def prove(db: DbSchema, ws: Workspace, ids: list[str]) -> dict[str, list[ProofRow]]:
-        calls.append(ids)
+    def prove(db: DbSchema, ws: Workspace, tables: list[str]) -> dict[str, list[ProofRow]]:
+        calls.append(tables)
         return {}
 
     events = []
@@ -381,12 +412,12 @@ def test_prove_gets_only_confirmed_and_never_upgrades_possible(vuln_app_path):
     seen: list[list[str]] = []
     row = ProofRow(as_who="anonymous", table="pets", row={"name": "Test Alice's cat"})
 
-    def prove(db: DbSchema, ws: Workspace, ids: list[str]) -> dict[str, list[ProofRow]]:
-        seen.append(ids)
-        return {"m3-pets": [row], "m3-messages": [row]}
+    def prove(db: DbSchema, ws: Workspace, tables: list[str]) -> dict[str, list[ProofRow]]:
+        seen.append(tables)
+        return {"pets": [row], "messages": [row]}
 
     s = run_analysis(str(vuln_app_path), lambda e: None, None, prove)
-    assert seen == [["m3-adoption_requests", "m3-messages"]]
+    assert seen == [["adoption_requests", "messages"]]
     pets = next(f for f in s.findings if f.id == "m3-pets")
     assert pets.status == "possible" and pets.proof_rows == []
     assert next(f for f in s.findings if f.id == "m3-messages").status == "proved"

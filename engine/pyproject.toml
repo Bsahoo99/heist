@@ -9,6 +9,7 @@ dependencies = [
     "modal>=1.6.2",
     "openai>=3.40.0",
     "pglast>=8.7",
+    "psycopg[binary]>=3.3.6",
     "pydantic>=2.14.1",
     "sse-starlette>=3.6.0",
     "supabase>=2.33.0",
@@ -32,6 +33,7 @@ packages = ["heist"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 norecursedirs = ["tests/fixtures"]
+markers = ["docker: needs a running Docker daemon (skipped without one)"]
 
 [tool.ruff]
 line-length = 100

@@ -26,7 +26,8 @@ from heist.fetch import UnsupportedRepo, parse_github_url
 from heist.llm.client import MetaClient
 from heist.llm.config import env, load_env
 from heist.models import ProgressEvent
-from heist.pipeline import GENERIC_ERROR_COPY, run_analysis
+from heist.pipeline import GENERIC_ERROR_COPY, Prove, run_analysis
+from heist.prove.sandbox import prove_local, prove_rls
 from heist.scene import Scene
 
 MAX_RUNNING = 2
@@ -36,23 +37,47 @@ NOT_FOUND_COPY = "This analysis is gone. Run it again."
 QUEUED_COPY = "Waiting for a free crew"
 
 Status = Literal["running", "done", "error"]
+Prover = Literal["modal", "docker"]
+PROVERS: tuple[Prover, ...] = ("modal", "docker")
+BAD_PROVER_COPY = "HEIST_PROVER must be modal, docker or unset."
+
+
+def parse_prover(raw: str | None) -> Prover | None:
+    """`HEIST_PROVER`: modal (Modal Sandbox), docker (local container), unset for no proofs."""
+    value = (raw or "").strip().lower()
+    if not value:
+        return None
+    for p in PROVERS:
+        if value == p:
+            return p
+    raise SystemExit(BAD_PROVER_COPY)
+
+
+def prover_fn(prover: Prover | None) -> Prove | None:
+    if prover is None:
+        return None
+    return prove_rls if prover == "modal" else prove_local
 
 
 @dataclass(frozen=True)
 class ApiConfig:
     offline: bool
     origins: list[str]
+    prover: Prover | None = None
 
     @classmethod
     def from_env(cls) -> "ApiConfig":
-        """`HEIST_OFFLINE=1` runs with template traces; otherwise a model key is required."""
+        """`HEIST_OFFLINE=1` runs with template traces; otherwise a model key is required.
+
+        `HEIST_PROVER` picks where RLS proofs run (see `parse_prover`); unset proves nothing.
+        """
         load_env(ENV_PATH)
         offline = env("HEIST_OFFLINE") == "1"
         if not offline and not env("OPEN_API_KEY"):
             raise SystemExit(NO_KEY_COPY)
         raw = env("HEIST_WEB_ORIGINS")
         origins = [o.strip() for o in raw.split(",") if o.strip()] if raw else DEFAULT_ORIGINS
-        return cls(offline=offline, origins=origins)
+        return cls(offline=offline, origins=origins, prover=parse_prover(env("HEIST_PROVER")))
 
 
 @dataclass(eq=False)
@@ -125,7 +150,9 @@ class StartIn(BaseModel):
     url: str
 
 
-def _work(record: AnalysisRecord, loop: asyncio.AbstractEventLoop, offline: bool) -> None:
+def _work(
+    record: AnalysisRecord, loop: asyncio.AbstractEventLoop, offline: bool, prove: Prove | None
+) -> None:
     """Runs in a worker thread. Every record change is handed to the event loop."""
     terminal: list[ProgressEvent] = []
 
@@ -140,7 +167,7 @@ def _work(record: AnalysisRecord, loop: asyncio.AbstractEventLoop, offline: bool
         # One client per analysis: clients are not shared across threads. Built inside the
         # try, so a failure here still ends the record instead of leaving it running.
         client = None if offline else MetaClient.from_env()
-        scene = run_analysis(record.url, emit, client)
+        scene = run_analysis(record.url, emit, client, prove)
     except Exception as exc:  # noqa: BLE001 - the pipeline already emitted the error copy
         reason = exc.reason if isinstance(exc, UnsupportedRepo) else GENERIC_ERROR_COPY
         error = next((e for e in terminal if e.kind == "error"), None)
@@ -163,6 +190,7 @@ def _error(status: int, message: str) -> JSONResponse:
 
 def create_app(config: ApiConfig) -> FastAPI:
     store = AnalysisStore()
+    prove = prover_fn(config.prover)
     pool = ThreadPoolExecutor(max_workers=MAX_RUNNING, thread_name_prefix="heist-analysis")
     tasks: set[asyncio.Future[None]] = set()  # submitted and not finished: running or queued
 
@@ -196,7 +224,7 @@ def create_app(config: ApiConfig) -> FastAPI:
             # Every worker is busy: say so, or the page would only show "connecting".
             record.publish(ProgressEvent(kind="stage", message=QUEUED_COPY))
         loop = asyncio.get_running_loop()
-        task = loop.run_in_executor(pool, _work, record, loop, config.offline)
+        task = loop.run_in_executor(pool, _work, record, loop, config.offline, prove)
         tasks.add(task)
         task.add_done_callback(tasks.discard)
         return {"id": record.id, "cached": False}
