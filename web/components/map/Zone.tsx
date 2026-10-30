@@ -323,16 +323,21 @@ function Street() {
   return <g>{dashes}</g>;
 }
 
+export const INACTIVE_NOTE = "Not used by this app";
+
 export function MapZone({
   zone,
   highlighted,
   children,
   testIds = true,
+  inactiveNote = INACTIVE_NOTE,
 }: {
   zone: SceneZone;
   highlighted: boolean;
   children?: React.ReactNode;
   testIds?: boolean;
+  /** Written on an inactive zone; null writes nothing (a map still being built). */
+  inactiveNote?: string | null;
 }) {
   const id = zone.id;
   const def = ZONES[id];
@@ -383,6 +388,7 @@ export function MapZone({
       {zone.active ? (
         children
       ) : (
+        inactiveNote && (
         <text
           x={r2(center.x)}
           y={r2(center.y - SLAB_H)}
@@ -391,8 +397,9 @@ export function MapZone({
           fontSize={14}
           fill="var(--map-muted)"
         >
-          Not used by this app
+          {inactiveNote}
         </text>
+        )
       )}
     </g>
   );

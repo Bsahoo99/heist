@@ -382,7 +382,12 @@ export function Replay({
   const ended = view.phase === "end" && !clock.playing;
 
   return (
-    <div className="replay" data-phase={view.phase}>
+    <div
+      className="replay"
+      data-testid="replay"
+      data-phase={view.phase}
+      data-state={clock.playing ? "playing" : ended ? "ended" : "paused"}
+    >
       <div
         ref={mapRef}
         className="replay-map"

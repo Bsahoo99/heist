@@ -32,6 +32,10 @@ export type CityMapProps = {
   className?: string;
   /** Prefix for SVG ids; set a different one when two maps share a page. */
   idPrefix?: string;
+  /** Test ids on the whole-block drawing (default true); off for a decorative second map. */
+  testIds?: boolean;
+  /** Written on inactive zones (default "Not used by this app"); null while the map is still being built. */
+  inactiveNote?: string | null;
   /**
    * Drawn above the paths and below the labels, in both renderings (the
    * replay's walking sprite and markers). `labelScale` is the label size
@@ -117,6 +121,7 @@ type SvgProps = {
   ariaLabel: string;
   overlay?: ReactNode;
   animated?: boolean;
+  inactiveNote?: string | null;
 };
 
 function MapSvg({
@@ -134,6 +139,7 @@ function MapSvg({
   ariaLabel,
   overlay,
   animated,
+  inactiveNote,
 }: SvgProps) {
   const glowId = `${idPrefix}-glow`;
   const clipId = `${idPrefix}-clip`;
@@ -162,7 +168,13 @@ function MapSvg({
       {ZONE_ORDER.map((id) => {
         const zone = scene.zones.find((z) => z.id === id) ?? { id, active: false, items: [] };
         return (
-          <MapZone key={id} zone={zone} highlighted={highlight?.zone === id} testIds={testIds}>
+          <MapZone
+            key={id}
+            zone={zone}
+            highlighted={highlight?.zone === id}
+            testIds={testIds}
+            inactiveNote={inactiveNote}
+          >
             {placed
               .filter((p) => p.zone === id)
               // Paint back to front: by depth, overflow extras first.
@@ -225,6 +237,8 @@ export function CityMap({
   progress = 1,
   className,
   idPrefix = "citymap",
+  testIds = true,
+  inactiveNote,
   overlay,
   focusFrame,
   wideFrame,
@@ -237,7 +251,7 @@ export function CityMap({
   const ariaLabel = summary(scene, flaggedCount);
   const focus = focusFrame ?? focusViewBox(scene, ghost, attack);
   const focusLabels = focusFrame ? focusFrame.labelIds : focusLabelIds(scene, ghost, attack);
-  const common = { scene, placed, ghost: ghostRoute, attack: attackRoute, progress, highlight, ariaLabel };
+  const common = { scene, placed, ghost: ghostRoute, attack: attackRoute, progress, highlight, ariaLabel, inactiveNote };
 
   return (
     <div className={`citymap ${className ?? ""}`}>
@@ -284,7 +298,7 @@ export function CityMap({
           labels={layoutLabels(placed)}
           titles={zoneTitles()}
           idPrefix={idPrefix}
-          testIds
+          testIds={testIds}
           overlay={overlay?.({ labelScale: 1, focus: false })}
         />
       </div>

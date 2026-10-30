@@ -25,6 +25,14 @@ describe("ResultsView", () => {
     expect(screen.queryByText(/All findings/)).toBeNull();
   });
 
+  test("the replay says whether it is playing", () => {
+    render(<ResultsView scene={vulnScene} autoPlay={false} />);
+    expect(screen.getByTestId("replay").getAttribute("data-state")).toBe("paused");
+    cleanup();
+    render(<ResultsView scene={vulnScene} />);
+    expect(screen.getByTestId("replay").getAttribute("data-state")).toBe("playing");
+  });
+
   test("the map box is a labelled group", () => {
     render(<ResultsView scene={cleanScene} autoPlay={false} />);
     expect(screen.getByRole("group", { name: /Heist replay/ })).toBeTruthy();

@@ -67,7 +67,7 @@ def _emit_nodes(g: AppGraph, emit: Emit) -> None:
             ProgressEvent(
                 kind="node_found",
                 message=f"Found {n.name}",
-                data={"zone": n.zone, "label": n.name, "node_id": n.id},
+                data={"zone": n.zone, "label": n.name, "node_id": n.id, "kind": n.kind},
             )
         )
 

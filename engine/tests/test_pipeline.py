@@ -149,7 +149,7 @@ def test_stage_events_in_order(vuln_app_path):
         "Done",
     ]
     found = [e for e in events if e.kind == "node_found"]
-    assert found and all(set(e.data) == {"zone", "label", "node_id"} for e in found)
+    assert found and all(set(e.data) == {"zone", "label", "node_id", "kind"} for e in found)
     finds = [e for e in events if e.kind == "finding"]
     assert len(finds) == len(s.findings)
     assert all(set(e.data) == {"id", "mistake", "severity", "status", "title"} for e in finds)

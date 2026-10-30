@@ -34,6 +34,18 @@ describe("CityMap zones", () => {
     expect(screen.getByTestId("zone-vault").getAttribute("data-active")).toBe("true");
   });
 
+  test("inactiveNote null leaves inactive zones unlabelled", () => {
+    render(<CityMap scene={fixtureScene({ warehouse: false })} inactiveNote={null} />);
+    const zone = screen.getByTestId("zone-warehouse");
+    expect(zone.getAttribute("data-active")).toBe("false");
+    expect(zone.textContent).not.toContain("Not used by this app");
+  });
+
+  test("testIds false drops the whole-block test ids", () => {
+    render(<CityMap scene={cleanScene} testIds={false} />);
+    expect(screen.queryByTestId("zone-vault")).toBeNull();
+  });
+
   test("renders all seven zones", () => {
     render(<CityMap scene={cleanScene} />);
     for (const id of [

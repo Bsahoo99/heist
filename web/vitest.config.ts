@@ -7,6 +7,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     passWithNoTests: true,
+    // Playwright owns e2e/.
+    exclude: ["**/node_modules/**", "e2e/**"],
   },
   resolve: {
     alias: { "@": path.resolve(__dirname, ".") },

@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run --passWithNoTests",
+    "e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "gen:scene": "json2ts ../shared/scene.schema.json -o lib/scene.gen.ts",
     "gen:art": "node scripts/gen-art-manifest.mjs",
@@ -21,6 +22,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@tailwindcss/turbopack": "^4",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^20",
