@@ -3,6 +3,7 @@
 export const CHECK_RULES_SQL = `-- Heist: a read-only look at your database rules. It changes nothing.
 -- One row per rule on each table in the public schema (RLS off means anyone with
 -- your public key can read it), then one row per storage bucket.
+-- RLS on with no rule means nobody can read the table through the API.
 select
   'table' as kind,
   c.relname as name,
@@ -23,5 +24,5 @@ select
   case when b.public then 'public' else 'private' end,
   null, null, null, null, null
 from storage.buckets b
-order by 1 desc, 2, 4;
+order by kind desc, name, policy;
 `;

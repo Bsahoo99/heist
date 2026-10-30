@@ -38,6 +38,13 @@ def write_no_rules_app(dest: Path) -> Path:
     return dest
 
 
+def write_partial_rules_app(dest: Path) -> Path:
+    """The clean app plus a migration file Heist cannot parse: its rules are only partly checked."""
+    shutil.copytree(FIXTURES_DIR / "clean_app", dest)
+    (dest / "supabase/migrations/0099_unreadable.sql").write_text("create tabel oops (;\n", encoding="utf-8")
+    return dest
+
+
 def make_stub_clone(repos: dict[str, Path], gate: threading.Event | None = None) -> CloneRepo:
     """`clone_repo` that copies `repos[url]` to dest; any other URL fails like a bad clone.
 

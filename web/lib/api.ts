@@ -2,7 +2,8 @@
 // the event stream). The engine allows this site's origin through CORS.
 import type { Scene } from "./scene.gen";
 
-export const ENGINE_URL = (process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
+// `||`, not `??`: an empty variable (as in .env.example) falls back to the local engine.
+export const ENGINE_URL = (process.env.NEXT_PUBLIC_ENGINE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
 export const LOST_CONNECTION_COPY = "Lost the connection to the engine. Refresh to pick up where it left off.";
 export const UNREACHABLE_COPY = "We couldn't reach the Heist engine. Try again in a moment.";
@@ -29,8 +30,9 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
     this.name = "ApiError";
   }
 }
@@ -42,8 +44,8 @@ async function request(path: string, init?: RequestInit, opts: RequestOptions = 
   const base = (opts.base ?? ENGINE_URL).replace(/\/+$/, "");
   try {
     return await fetch(`${base}${path}`, { cache: "no-store", signal: opts.signal, ...init });
-  } catch {
-    throw new ApiError(UNREACHABLE_COPY, 0);
+  } catch (cause) {
+    throw new ApiError(UNREACHABLE_COPY, 0, { cause });
   }
 }
 

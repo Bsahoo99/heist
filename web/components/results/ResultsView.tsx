@@ -13,6 +13,7 @@ import { Legend, Replay } from "@/components/replay/Replay";
 import { StepPlayer } from "@/components/replay/StepPlayer";
 import { useReplayClock } from "@/components/replay/useReplayClock";
 import { offersBadge } from "@/lib/badge";
+import { rulesCoverage, unreadMigrationsCopy } from "@/lib/coverage";
 import { buildTimeline, playerSteps } from "@/lib/timeline";
 
 export type ResultsLayout = "normal" | "video";
@@ -46,6 +47,7 @@ function FindingStage({
   /** The analysis id when the clean run offers its README badge here. */
   badgeId?: string;
 }) {
+  const coverage = rulesCoverage(scene);
   const timeline = useMemo(() => buildTimeline(finding, scene), [finding, scene]);
   const steps = useMemo(() => playerSteps(finding, scene), [finding, scene]);
   const clock = useReplayClock(timeline, { autoPlay });
@@ -72,10 +74,19 @@ function FindingStage({
             {/* The recording layout keeps the caption to the story alone, so the key moves up here. */}
             {layout === "video" && <Legend />}
           </>
-        ) : scene.meta.has_db_rules ? (
+        ) : coverage === "full" ? (
           <>
             <h1 className="results-title">Every lock held</h1>
             <p className="results-sub">Heist tried every door of {scene.meta.repo} and found no way in.</p>
+          </>
+        ) : coverage === "partial" ? (
+          // Rules in the unread files were never checked: no "every lock".
+          <>
+            <h1 className="results-title">No way in found</h1>
+            <p className="results-sub">
+              Heist found no way into {scene.meta.repo}, but{" "}
+              {unreadMigrationsCopy(scene.meta.unparsed_migrations.length)}
+            </p>
           </>
         ) : (
           // Mistakes 3 and 4 need the database rules: never claim those locks held.
@@ -135,9 +146,11 @@ function FindingStage({
  * the map as large as the viewport allows, the caption and the player; no
  * side panel, findings list, fix, missing-rules or badge cards.
  *
- * The selected finding's fix sits under its step panel. Without database
- * rules the missing-rules card leads the list (and replaces it when there are
- * no findings). With an `id` and every check held, the README badge is offered.
+ * The selected finding's fix sits under its step panel on phones and under
+ * the replay on wide screens. Without database rules the missing-rules card
+ * comes before the list (under the replay on wide screens, so the query gets
+ * the full width) and replaces it when there are no findings. With an `id`,
+ * every check held and every migration read, the README badge is offered.
  */
 export function ResultsView({
   scene,
@@ -161,7 +174,8 @@ export function ResultsView({
   const finding = scene.findings.find((f) => f.id === selected.id) ?? null;
   const top = useRef<HTMLDivElement>(null);
   const badgeId = id && offersBadge(scene) ? id : undefined;
-  const rulesMissing = !scene.meta.has_db_rules;
+  const coverage = rulesCoverage(scene);
+  const rulesMissing = coverage === "none";
   const hasFindings = scene.findings.length > 0;
 
   const onSelect = (id: string) => {
@@ -183,9 +197,13 @@ export function ResultsView({
         layout={layout}
         badgeId={badgeId}
       />
+      {layout === "normal" && rulesMissing && (
+        <div className="results-rules">
+          <NoRulesCard />
+        </div>
+      )}
       {layout === "normal" && (
         <div className="results-list">
-          {rulesMissing && <NoRulesCard />}
           {/* Only possible findings, every check held: the badge is earned, offer it above the list. */}
           {hasFindings && badgeId && <BadgeBlock scene={scene} id={badgeId} />}
           {(hasFindings || !rulesMissing) && (
@@ -193,7 +211,12 @@ export function ResultsView({
               <h2 id="results-list-title" className="results-list-title">
                 {hasFindings ? `All findings (${scene.findings.length})` : "Findings"}
               </h2>
-              <FindingsList findings={scene.findings} selectedId={finding?.id ?? null} onSelect={onSelect} />
+              <FindingsList
+                findings={scene.findings}
+                selectedId={finding?.id ?? null}
+                onSelect={onSelect}
+                emptyText={coverage === "full" ? undefined : "No findings in the parts Heist could read."}
+              />
             </section>
           )}
         </div>

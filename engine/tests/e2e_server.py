@@ -4,6 +4,7 @@ Run from engine/: `uv run python -m tests.e2e_server`. Stub repos:
 - https://github.com/heist-fixtures/vuln-app   -> tests/fixtures/vuln_app
 - https://github.com/heist-fixtures/clean-app  -> tests/fixtures/clean_app
 - https://github.com/heist-fixtures/no-rules-app -> tests/fixtures/vuln_app without supabase/migrations
+- https://github.com/heist-fixtures/partial-rules-app -> tests/fixtures/clean_app plus an unreadable migration
 - https://github.com/heist-fixtures/plain-vite -> a Vite app without Supabase (unsupported)
 Any other GitHub URL fails like a bad clone, so nothing ever reaches GitHub.
 
@@ -28,6 +29,7 @@ from .stub_repos import (
     make_stub_clone,
     stub_url,
     write_no_rules_app,
+    write_partial_rules_app,
     write_plain_vite_app,
 )
 
@@ -47,11 +49,13 @@ def main() -> None:
     scratch = Path(tempfile.mkdtemp(prefix="heist-e2e-"))
     plain = write_plain_vite_app(scratch / "plain")
     no_rules = write_no_rules_app(scratch / "no_rules")
+    partial_rules = write_partial_rules_app(scratch / "partial_rules")
     repos = {
         stub_url("vuln-app"): FIXTURES_DIR / "vuln_app",
         stub_url("clean-app"): FIXTURES_DIR / "clean_app",
         stub_url("plain-vite"): plain,
         stub_url("no-rules-app"): no_rules,
+        stub_url("partial-rules-app"): partial_rules,
     }
     pipeline.clone_repo = _slowed(make_stub_clone(repos), delay)
     pipeline.run_detectors = _slowed(pipeline.run_detectors, delay)

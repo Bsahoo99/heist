@@ -44,6 +44,7 @@ export function fixtureScene(opts: Options = {}): Scene {
       has_db_rules: true,
       unparsed_migrations: [],
       checks_held: 7,
+      checks_tested: 7,
     },
   };
 }

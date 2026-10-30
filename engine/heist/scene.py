@@ -16,6 +16,8 @@ log = logging.getLogger(__name__)
 
 ZONE_ORDER: tuple[ZoneId, ...] = get_args(ZoneId)
 MISTAKES = range(1, 8)
+# Open tables and open buckets: checked only against the database rules (the migrations).
+RULE_MISTAKES = frozenset({3, 4})
 # Node kinds that never get their own box on the map.
 HIDDEN_KINDS = {"policy", "client_call"}
 _STATUS_RANK = {"proved": 0, "confirmed": 1, "possible": 2}
@@ -82,6 +84,8 @@ class SceneMeta(BaseModel):
     has_db_rules: bool
     unparsed_migrations: list[str]
     checks_held: int
+    # How many of the seven checks ran: 5 without database rules (mistakes 3 and 4 need them).
+    checks_tested: int
 
 
 class Scene(BaseModel):
@@ -196,10 +200,20 @@ def _rank(f: SceneFinding) -> tuple[int, int, int, str]:
     return (_STATUS_RANK[f.status], _SEVERITY_RANK[f.severity], f.mistake, f.id)
 
 
-def checks_held(findings: list[SceneFinding]) -> int:
-    """Seven minus the mistakes (1..7) with a confirmed or proved finding."""
-    broken = {f.mistake for f in findings if f.status != "possible" and f.mistake in MISTAKES}
-    return len(MISTAKES) - len(broken)
+def _tested(has_db_rules: bool) -> set[int]:
+    return set(MISTAKES) if has_db_rules else set(MISTAKES) - RULE_MISTAKES
+
+
+def checks_tested(has_db_rules: bool) -> int:
+    """How many of the seven checks ran: all of them, or five without the database rules."""
+    return len(_tested(has_db_rules))
+
+
+def checks_held(findings: list[Any], has_db_rules: bool = True) -> int:
+    """The checks that ran with no confirmed or proved finding. A check that never ran is not held."""
+    tested = _tested(has_db_rules)
+    broken = {f.mistake for f in findings if f.status != "possible" and f.mistake in tested}
+    return len(tested) - len(broken)
 
 
 def build_scene(
@@ -209,7 +223,7 @@ def build_scene(
     proofs: dict[str, list[ProofRow]],
     meta: SceneMeta,
 ) -> Scene:
-    """Assemble the Scene. meta.checks_held is set here.
+    """Assemble the Scene. meta.checks_held and meta.checks_tested are set here.
 
     A confirmed finding with proof rows becomes proved; a possible one never does.
 
@@ -258,7 +272,12 @@ def build_scene(
         version=1,
         zones=_zones(items, flagged),
         findings=out,
-        meta=meta.model_copy(update={"checks_held": checks_held(out)}),
+        meta=meta.model_copy(
+            update={
+                "checks_held": checks_held(out, meta.has_db_rules),
+                "checks_tested": checks_tested(meta.has_db_rules),
+            }
+        ),
     )
 
 

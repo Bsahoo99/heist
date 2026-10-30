@@ -91,6 +91,7 @@ export const SAMPLE_SCENE: Scene = {
     has_db_rules: true,
     unparsed_migrations: [],
     checks_held: 0,
+    checks_tested: 7,
   },
 };
 

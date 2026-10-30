@@ -26,13 +26,16 @@ export function FindingsList({
   findings,
   selectedId,
   onSelect,
+  emptyText = "No findings. Every check passed.",
 }: {
   findings: SceneFinding[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** What an empty list says; only claim every check passed when every check ran. */
+  emptyText?: string;
 }) {
   if (findings.length === 0) {
-    return <p className="findings-empty">No findings. Every check passed.</p>;
+    return <p className="findings-empty">{emptyText}</p>;
   }
   return (
     <ul className="findings-list">

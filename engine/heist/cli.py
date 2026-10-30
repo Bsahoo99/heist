@@ -11,6 +11,9 @@ from heist.llm.client import MetaClient
 from heist.llm.config import env, load_env
 from heist.models import ProgressEvent
 from heist.pipeline import GENERIC_ERROR_COPY, run_analysis
+from heist.scene import MISTAKES
+
+TOTAL_CHECKS = len(MISTAKES)
 
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 # The analyzed time written into the checked-in web fixtures, so they diff cleanly.
@@ -26,7 +29,9 @@ def _print_event(e: ProgressEvent) -> None:
         print(f"[heist]   {d['severity']} {d['status']}: {d['title']}", file=sys.stderr)
     elif e.kind == "done":
         d = e.data
-        print(f"[heist] {d['findings']} findings, {d['checks_held']}/7 locks held", file=sys.stderr)
+        tested = d.get("checks_tested", TOTAL_CHECKS)
+        note = "" if tested >= TOTAL_CHECKS else " (database rules not checked)"
+        print(f"[heist] {d['findings']} findings, {d['checks_held']}/{tested} locks held{note}", file=sys.stderr)
 
 
 def _parser() -> argparse.ArgumentParser:

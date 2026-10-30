@@ -3,6 +3,7 @@ import shutil
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal, TypeVar
 
 import pytest
@@ -16,11 +17,11 @@ from heist.graph.build import build_app_graph
 from heist.llm.client import MetaClient, SpendTracker
 from heist.llm.templates import fallback_trace
 from heist.llm.triage import TriageOut
-from heist.models import AppGraph, DbSchema, Finding, FixOut, StepOut, TraceOut
+from heist.models import AppGraph, DbSchema, Finding, FixOut, ProgressEvent, StepOut, TraceOut
 from heist.pipeline import run_analysis
-from heist.scene import ProofRow, Scene, SceneMeta, build_scene
+from heist.scene import ProofRow, Scene, SceneMeta, build_scene, checks_held, checks_tested
 
-from .stub_repos import write_no_rules_app
+from .stub_repos import write_no_rules_app, write_partial_rules_app
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -95,6 +96,7 @@ def test_pipeline_clean_app(clean_app_path, fake_client):
     s = run_analysis(str(clean_app_path), lambda e: None, fake_client)
     assert s.findings == []
     assert s.meta.checks_held == 7
+    assert s.meta.checks_tested == 7
     assert all(not i.flagged for z in s.zones for i in z.items)
 
 
@@ -113,6 +115,31 @@ def test_no_rules_stub_keeps_the_code_findings(tmp_path):
     mistakes = {f.mistake for f in s.findings}
     assert {1, 2} <= mistakes
     assert not mistakes & {3, 4}
+    # Mistakes 3 and 4 need the rules: five checks ran, and only the unbroken ones held.
+    broken = {f.mistake for f in s.findings if f.status != "possible"}
+    assert s.meta.checks_tested == 5
+    assert s.meta.checks_held == 5 - len(broken)
+
+
+def test_partial_rules_stub_lists_the_unreadable_migration(tmp_path):
+    """The e2e `partial-rules-app` stub: a clean app with one migration Heist cannot parse."""
+    s = run_analysis(str(write_partial_rules_app(tmp_path / "partial")), lambda e: None, None)
+    assert s.meta.has_db_rules is True
+    assert s.meta.unparsed_migrations == ["supabase/migrations/0099_unreadable.sql"]
+    assert s.findings == []
+
+
+def test_checks_held_counts_only_tested_checks():
+    def finding(mistake: int, status: str = "confirmed") -> Any:
+        return SimpleNamespace(mistake=mistake, status=status)
+
+    found = [finding(1), finding(2), finding(6, "possible")]
+    assert checks_tested(True) == 7 and checks_tested(False) == 5
+    assert checks_held(found, has_db_rules=True) == 5
+    assert checks_held(found, has_db_rules=False) == 3
+    # A rules check that never ran cannot be counted held, nor broken.
+    assert checks_held([finding(3)], has_db_rules=False) == 5
+    assert checks_held([finding(3)], has_db_rules=True) == 6
 
 
 def test_unsupported_repo_emits_error(tmp_path, fake_client):
@@ -169,7 +196,11 @@ def test_stage_events_in_order(vuln_app_path):
     planning = kinds.index(("stage", "Planning the heist"))
     assert all(sorting < events.index(e) < planning for e in finds)
     assert events[-1].kind == "done"
-    assert events[-1].data == {"findings": len(s.findings), "checks_held": s.meta.checks_held}
+    assert events[-1].data == {
+        "findings": len(s.findings),
+        "checks_held": s.meta.checks_held,
+        "checks_tested": s.meta.checks_tested,
+    }
 
 
 def test_offline_makes_zero_client_calls(vuln_app_path, monkeypatch):
@@ -225,6 +256,7 @@ def test_scene_shape(vuln_app_path):
     assert ranks == sorted(ranks)
     held = 7 - len({f.mistake for f in s.findings if f.status != "possible" and f.mistake >= 1})
     assert s.meta.checks_held == held
+    assert s.meta.checks_tested == 7
     assert s.meta.repo == "vuln_app" and s.meta.commit_sha == "local"
     assert s.meta.has_db_rules is True
     for f in s.findings:
@@ -355,6 +387,16 @@ def test_cli_offline_end_to_end(vuln_app_path, tmp_path, monkeypatch, capsys):
     assert s.meta.analyzed_at == FIXED_TIME
     err = capsys.readouterr().err
     assert "Fetching the repo" in err
+    assert f"{s.meta.checks_held}/7 locks held\n" in err
+
+
+def test_cli_says_when_the_database_rules_were_not_checked(capsys):
+    done = {"findings": 4, "checks_held": 1, "checks_tested": 5}
+    cli._print_event(ProgressEvent(kind="done", message="Done", data=done))  # pyright: ignore[reportPrivateUsage]
+    assert capsys.readouterr().err == "[heist] 4 findings, 1/5 locks held (database rules not checked)\n"
+    done = {"findings": 0, "checks_held": 7, "checks_tested": 7}
+    cli._print_event(ProgressEvent(kind="done", message="Done", data=done))  # pyright: ignore[reportPrivateUsage]
+    assert capsys.readouterr().err == "[heist] 0 findings, 7/7 locks held\n"
 
 
 def test_cli_unsupported_exits_2(tmp_path, capsys):
@@ -506,6 +548,7 @@ def test_storage_policy_maps_to_its_bucket(clean_app_path, tmp_copy):
         has_db_rules=True,
         unparsed_migrations=[],
         checks_held=0,
+        checks_tested=0,
     )
     s = build_scene(g, findings, traces, {}, meta)
     item = {f.id: f.attack_path[0].item_id for f in s.findings}

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { ResultsView } from "./ResultsView";
 import { cleanScene, vulnScene, withProvedFinding } from "@/tests/helpers/scenes";
 import type { Scene } from "@/lib/scene.gen";
+import { fixtureScene } from "@/tests/helpers/fixtureScene";
 
 const withMeta = (scene: Scene, meta: Partial<Scene["meta"]>): Scene => ({ ...scene, meta: { ...scene.meta, ...meta } });
 const BADGE_HEADING = "Add the badge to your README";
@@ -64,13 +65,15 @@ describe("ResultsView", () => {
     expect(screen.queryByRole("heading", { name: BADGE_HEADING })).toBeNull();
   });
 
-  test("missing rules: the card sits above the findings list", () => {
+  test("missing rules: the card comes before the findings list, in its own grid area", () => {
     const { container } = render(
       <ResultsView scene={withMeta(vulnScene, { has_db_rules: false })} id="abc" autoPlay={false} />,
     );
-    const list = container.querySelector(".results-list")!;
     const card = screen.getByRole("heading", { name: "We can't see your database rules" });
-    expect(list.contains(card)).toBe(true);
+    expect(container.querySelector(".results-rules")!.contains(card)).toBe(true);
+    expect(container.querySelector(".results-list")!.contains(card)).toBe(false);
+    expect(container.querySelector(".results-panel")!.contains(card)).toBe(false);
+    // Phones show the grid areas in source order: the card, then the list.
     expect(card.compareDocumentPosition(screen.getByText(/All findings/)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("heading", { name: BADGE_HEADING })).toBeNull();
   });
@@ -112,5 +115,24 @@ describe("ResultsView", () => {
   test("a failing app offers no badge", () => {
     render(<ResultsView scene={vulnScene} id="abc" autoPlay={false} />);
     expect(screen.queryByRole("heading", { name: BADGE_HEADING })).toBeNull();
+  });
+
+  test("migrations it could not read: no claim that every lock held, no badge", () => {
+    const scene = withMeta(cleanScene, { unparsed_migrations: ["supabase/migrations/0009_a.sql", "supabase/migrations/0010_b.sql"] });
+    const { container } = render(<ResultsView scene={scene} id="abc" autoPlay={false} />);
+    const head = container.querySelector(".results-head")!.textContent!;
+    expect(head).not.toMatch(/every lock|all seven/i);
+    expect(head).toContain("2 migration files could not be read, so the database checks may be incomplete.");
+    expect(screen.queryByText(/Every check passed/)).toBeNull();
+    expect(screen.getByText("No findings in the parts Heist could read.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: BADGE_HEADING })).toBeNull();
+  });
+
+  test("a clean run with no door to try ends at once", async () => {
+    const base = fixtureScene({ guard_desk: false, side_doors: false });
+    const scene = withMeta(base, { has_db_rules: false, checks_tested: 5 });
+    render(<ResultsView scene={scene} />);
+    await waitFor(() => expect(screen.getByTestId("replay").getAttribute("data-state")).toBe("ended"), { timeout: 1000 });
+    expect(screen.getByTestId("replay-end-title").textContent).toBe("No way in through the code.");
   });
 });

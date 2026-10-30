@@ -7,6 +7,7 @@ import { CityMap } from "@/components/map/CityMap";
 import { boxRect, layoutLabels, partialPath, placeItems, routePath, type Point, type Rect } from "@/components/map/layout";
 import { ProofRows } from "@/components/panels/ProofRows";
 import { badgeText } from "@/lib/badge";
+import { rulesCoverage, unreadMigrationsCopy, type RulesCoverage } from "@/lib/coverage";
 import { buildTimeline } from "@/lib/timeline";
 import { cameraFrame, pickCorner, wideFrame, type Corner } from "./camera";
 import { MARKER, makePlan, placeMarkers, replayView, type ReplayView, type Sprite } from "./replayView";
@@ -282,22 +283,36 @@ function Caption({ view, plan, finding }: { view: ReplayView; plan: ReturnType<t
   );
 }
 
+/** A clean run's end words: a full verdict only when every database rule was read. */
+const CLEAN_END: Record<RulesCoverage, { kicker: string; title: string }> = {
+  full: { kicker: "Heist failed", title: "Your app held up against all seven checks." },
+  none: { kicker: "Partly tested", title: "No way in through the code." },
+  partial: { kicker: "Partly tested", title: "No way in found." },
+};
+
 /**
  * Shown in the caption's place once the replay is over, so it never covers the
- * map. A clean run ends on the heist failing; without the database rules it
- * says only what Heist could test.
+ * map. A clean run ends on the heist failing; without all the database rules
+ * it says only what Heist could test.
  */
 function EndCard({ scene, clean, onAgain }: { scene: Scene; clean: boolean; onAgain: () => void }): ReactNode {
-  const rules = scene.meta.has_db_rules;
+  const coverage = rulesCoverage(scene);
+  const full = coverage === "full";
+  const words = CLEAN_END[coverage];
   return (
-    <div className={clean && rules ? "replay-end replay-end-clean" : "replay-end"} role="status">
+    <div className={clean && full ? "replay-end replay-end-clean" : "replay-end"} role="status">
       {clean ? (
         <div className="replay-end-words">
-          <p className="replay-end-kicker">Heist failed</p>
-          <p className="replay-end-title" data-testid="replay-end-title">
-            {rules ? "Your app held up against all seven checks." : "No way in through the code."}
+          <p className="replay-end-kicker" data-coverage={coverage}>
+            {words.kicker}
           </p>
-          {!rules && <p className="replay-end-text">Heist could not check your database rules.</p>}
+          <p className="replay-end-title" data-testid="replay-end-title">
+            {words.title}
+          </p>
+          {coverage === "none" && <p className="replay-end-text">Heist could not check your database rules.</p>}
+          {coverage === "partial" && (
+            <p className="replay-end-text">{unreadMigrationsCopy(scene.meta.unparsed_migrations.length)}</p>
+          )}
         </div>
       ) : (
         <div className="replay-end-words">
@@ -307,7 +322,7 @@ function EndCard({ scene, clean, onAgain }: { scene: Scene; clean: boolean; onAg
           <p className="replay-end-text">Step through each stop with the player, or pick another finding.</p>
         </div>
       )}
-      {clean && rules && <p className="replay-badge">{badgeText(scene)}</p>}
+      {clean && full && <p className="replay-badge">{badgeText(scene)}</p>}
       <button type="button" className="replay-again" onClick={onAgain}>
         Watch again
       </button>

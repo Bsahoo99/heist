@@ -1,4 +1,5 @@
 // The README badge: its words, its colour and the SVG served at /api/badge/<id>.
+import { rulesCoverage } from "./coverage";
 import type { Scene } from "./scene.gen";
 
 /** How many checks Heist runs. */
@@ -10,25 +11,34 @@ const LABEL = "Heist-tested";
 
 /**
  * The badge's words. Never claims a lock Heist did not test: without the
- * database rules (mistakes 3 and 4 need them) it says so instead of a count.
+ * database rules (mistakes 3 and 4 need them), or with migration files it
+ * could not read, it says so instead of a count.
  */
 export function badgeText(scene: Scene): string {
-  if (!scene.meta.has_db_rules) return `${LABEL}: database rules not checked`;
+  const coverage = rulesCoverage(scene);
+  if (coverage === "none") return `${LABEL}: database rules not checked`;
+  if (coverage === "partial") return `${LABEL}: database rules partly checked`;
   return `${LABEL}: ${scene.meta.checks_held}/${TOTAL_CHECKS} locks held`;
 }
 
-/** Green for every lock, amber for 5 or 6, red below 5, grey when the rules were not checked. */
+/**
+ * Green for every lock, amber for 5 or 6, red below 5. Grey when the rules
+ * were partly checked, or not checked and nothing was found; red when they
+ * were not checked but the code already has a confirmed or proved finding.
+ */
 export function badgeTone(scene: Scene): BadgeTone {
-  if (!scene.meta.has_db_rules) return "grey";
+  const coverage = rulesCoverage(scene);
+  if (coverage === "none") return scene.findings.some((f) => f.status !== "possible") ? "red" : "grey";
+  if (coverage === "partial") return "grey";
   const held = scene.meta.checks_held;
   if (held >= TOTAL_CHECKS) return "green";
   if (held >= 5) return "amber";
   return "red";
 }
 
-/** Whether the page offers the badge: every check held, and the database rules were among them. */
+/** Whether the page offers the badge: every check held, and every database rule was read. */
 export function offersBadge(scene: Scene): boolean {
-  return scene.meta.has_db_rules && scene.meta.checks_held >= TOTAL_CHECKS;
+  return rulesCoverage(scene) === "full" && scene.meta.checks_held >= TOTAL_CHECKS;
 }
 
 /** The Markdown for a README: the badge image, linking to the analysis. */

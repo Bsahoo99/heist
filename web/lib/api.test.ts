@@ -114,3 +114,25 @@ describe("subscribe", () => {
     expect(seen).toEqual([]);
   });
 });
+
+describe("ENGINE_URL", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("falls back to the local engine when the variable is set but empty", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENGINE_URL", "");
+    vi.resetModules();
+    const fresh = await import("./api");
+    expect(fresh.ENGINE_URL).toBe("http://127.0.0.1:8000");
+  });
+
+  it("keeps the cause when the engine cannot be reached", async () => {
+    const cause = new TypeError("Failed to fetch");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(cause));
+    const err = await getAnalysis("abc").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).cause).toBe(cause);
+  });
+});

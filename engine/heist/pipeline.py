@@ -179,10 +179,15 @@ def _analyze(
         has_db_rules=g.has_db_rules,
         unparsed_migrations=list(g.db.unparsed_migrations) if g.db else [],
         checks_held=0,  # set by build_scene
+        checks_tested=0,  # set by build_scene
     )
     scene = build_scene(g, findings, traces, proofs, meta)
     _stage(emit, "Done")
-    done: dict[str, Any] = {"findings": len(scene.findings), "checks_held": scene.meta.checks_held}
+    done: dict[str, Any] = {
+        "findings": len(scene.findings),
+        "checks_held": scene.meta.checks_held,
+        "checks_tested": scene.meta.checks_tested,
+    }
     emit(ProgressEvent(kind="done", message="Done", data=done))
     return scene
 

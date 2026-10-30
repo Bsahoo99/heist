@@ -5,6 +5,7 @@ import { cleanScene, vulnScene } from "@/tests/helpers/scenes";
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 const call = (id: string) => GET(new Request(`http://localhost/api/badge/${id}`), { params: Promise.resolve({ id }) });
@@ -59,5 +60,34 @@ describe("GET /api/badge/[id]", () => {
     expect(out.status).toBe(404);
     expect(out.headers.get("Cache-Control")).toBe("no-store");
     expect(out.headers.get("Content-Type")).toMatch(/^text\/plain/);
+  });
+
+  test.each(["..", ".", "a.b", "has space", "x".repeat(65), "%2e%2e"])("an id like %j is a 404 without asking the engine", async (id) => {
+    const fetchMock = engine(() => json({ status: "done", scene: cleanScene, error: null, url: "x" }));
+    const out = await call(id);
+    expect(out.status).toBe(404);
+    expect(out.headers.get("Cache-Control")).toBe("no-store");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("an engine that cannot be reached is logged once by error type, without the id", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    engine(() => {
+      throw new TypeError("fetch failed for http://engine/analyses/secret-id");
+    });
+    await call("secret-id");
+    expect(log).toHaveBeenCalledTimes(1);
+    const line = log.mock.calls[0].join(" ");
+    expect(line).toContain("TypeError");
+    expect(line).not.toContain("secret-id");
+  });
+
+  test("an unknown or unfinished analysis is not logged", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    engine(() => json({ error: "nope" }, 404));
+    await call("abc");
+    engine(() => json({ status: "running", scene: null, error: null, url: "x" }));
+    await call("abc");
+    expect(log).not.toHaveBeenCalled();
   });
 });

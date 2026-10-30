@@ -48,6 +48,18 @@ describe("buildTimeline", () => {
     expect(t.filter((e) => e.kind === "lock-held").map((e) => e.zone)).toEqual(["guard_desk", "side_doors"]);
   });
 
+  test("clean app with migrations it could not read never claims the vault or warehouse locks", () => {
+    const scene = { ...fixtureScene(), meta: { ...fixtureScene().meta, unparsed_migrations: ["a.sql"] } };
+    const t = buildTimeline(null, scene);
+    expect(t.filter((e) => e.kind === "lock-held").map((e) => e.zone)).toEqual(["guard_desk", "side_doors"]);
+  });
+
+  test("clean app with no door to try goes straight to the end", () => {
+    const base = fixtureScene({ guard_desk: false, side_doors: false });
+    const scene = { ...base, meta: { ...base.meta, has_db_rules: false } };
+    expect(buildTimeline(null, scene)).toEqual([{ kind: "end", at: 0 }]);
+  });
+
   test("clean app skips inactive doors", () => {
     const scene = fixtureScene({ side_doors: false, warehouse: false });
     const t = buildTimeline(null, scene);

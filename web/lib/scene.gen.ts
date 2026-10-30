@@ -33,6 +33,7 @@ export type TraceSource = "model" | "model_retry" | "fallback";
 export type Findings = SceneFinding[];
 export type AnalyzedAt = string;
 export type ChecksHeld = number;
+export type ChecksTested = number;
 export type CommitSha = string;
 export type HasDbRules = boolean;
 export type Repo = string;
@@ -105,6 +106,7 @@ export interface Row {
 export interface SceneMeta {
   analyzed_at: AnalyzedAt;
   checks_held: ChecksHeld;
+  checks_tested: ChecksTested;
   commit_sha: CommitSha;
   has_db_rules: HasDbRules;
   models: Models;

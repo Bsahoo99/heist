@@ -274,6 +274,10 @@
           "title": "Checks Held",
           "type": "integer"
         },
+        "checks_tested": {
+          "title": "Checks Tested",
+          "type": "integer"
+        },
         "commit_sha": {
           "title": "Commit Sha",
           "type": "string"
@@ -317,7 +321,8 @@
         "models",
         "has_db_rules",
         "unparsed_migrations",
-        "checks_held"
+        "checks_held",
+        "checks_tested"
       ],
       "title": "SceneMeta",
       "type": "object"

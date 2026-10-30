@@ -210,7 +210,13 @@ body {
   max-width: 1560px;
   margin: 0 auto;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "head" "stage" "panel" "fix" "list";
+}
+/* One column: blocks stack in source order (head, stage, panel, fix, rules,
+   list), so a block that is not shown leaves no empty row and no extra gap. */
+@media (max-width: 1023px) {
+  .results.results > * {
+    grid-area: auto;
+  }
 }
 @media (min-width: 1024px) {
   .results {
@@ -223,6 +229,23 @@ body {
       "fix list";
     column-gap: 20px;
   }
+}
+/* Wide screens with the missing-rules card: it sits under the replay, before the fix, so
+   the query gets the full width and the side column keeps the step panel and the list. */
+@media (min-width: 1024px) {
+  .results:has(> .results-rules) {
+    grid-template-rows: auto auto auto auto 1fr;
+    grid-template-areas:
+      "head head"
+      "stage panel"
+      "stage list"
+      "rules list"
+      "fix list";
+  }
+}
+.results-rules {
+  grid-area: rules;
+  min-width: 0;
 }
 .results-fix {
   grid-area: fix;
@@ -779,7 +802,6 @@ body {
   font-weight: 600;
 }
 .rules-card {
-  margin-bottom: 16px;
   border-color: var(--map-lamp);
 }
 .badge-block {
@@ -845,11 +867,14 @@ body {
   max-height: 240px;
   overflow-y: auto;
   padding: 10px 12px;
+  /* One click selects the whole query when copying fails. */
+  user-select: all;
   color: var(--map-ink);
 }
 /* One long line: wrap it so the whole Markdown shows. */
 .badge-markdown {
   padding: 10px 12px;
+  user-select: all;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--map-ink);

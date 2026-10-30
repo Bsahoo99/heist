@@ -1491,6 +1491,7 @@
     "models": {},
     "has_db_rules": true,
     "unparsed_migrations": [],
-    "checks_held": 2
+    "checks_held": 2,
+    "checks_tested": 7
   }
 }

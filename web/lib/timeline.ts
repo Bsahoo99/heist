@@ -1,5 +1,6 @@
 // The replay's script: a pure function from one finding (or none, for a
 // clean app) to timed events. The same input always gives the same timeline.
+import { rulesCoverage } from "@/lib/coverage";
 import type { PathStep, Scene, SceneFinding, Zone as ZoneId } from "@/lib/scene.gen";
 
 export type TimelineEvent = {
@@ -61,8 +62,8 @@ const RULE_ZONES: ZoneId[] = ["vault", "warehouse"];
 
 function activeLockZones(scene: Scene): ZoneId[] {
   return LOCK_ZONES.filter((id) => {
-    // Never show a lock holding that Heist could not test.
-    if (!scene.meta.has_db_rules && RULE_ZONES.includes(id)) return false;
+    // Never show a lock holding that Heist could not test (fully).
+    if (rulesCoverage(scene) !== "full" && RULE_ZONES.includes(id)) return false;
     const z = scene.zones.find((zone) => zone.id === id);
     return Boolean(z?.active && z.items.length > 0);
   });
@@ -122,6 +123,9 @@ export function buildTimeline(finding: SceneFinding | null, scene: Scene): Timel
     const last = finding.attack_path.at(-1);
     events.push({ kind: "proof", zone: last?.zone });
   }
+
+  // Nothing to walk (a clean app with no door Heist could try): straight to the end card.
+  if (events.length === 0) return [{ kind: "end", at: 0 }];
 
   const out: TimelineEvent[] = [];
   let t = 0;
