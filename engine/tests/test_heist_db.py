@@ -101,3 +101,22 @@ def test_only_one_finished_row_per_repo_and_commit(heist_db):
         heist_db.execute(
             "insert into public.analyses (id, repo, sha, status) values ('d', 'r', 's', 'done')"
         )
+
+
+def test_service_role_reads_and_updates_analyses(heist_db):
+    # What the engine's `get`, `fail` upsert and finish cleanup need.
+    with heist_db.transaction():
+        heist_db.execute("set local role service_role")
+        heist_db.execute(
+            "insert into public.analyses (id, repo, sha, status) values ('a', 'r', 's', 'running')"
+        )
+        heist_db.execute(
+            "insert into public.analyses (id, repo, sha, status, error) values"
+            " ('a', 'r', 's', 'error', 'nope')"
+            " on conflict (id) do update set status = excluded.status, error = excluded.error"
+        )
+        row = heist_db.execute("select status, error from public.analyses where id = 'a'").fetchone()
+        assert row == ("error", "nope")
+        heist_db.execute("update public.analyses set status = 'done' where id = 'a'")
+        heist_db.execute("delete from public.analyses where id = 'a' and status <> 'done'")
+        assert heist_db.execute("select count(*) from public.analyses").fetchone() == (1,)

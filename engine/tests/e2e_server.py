@@ -71,7 +71,8 @@ def main() -> None:
         origins=[o.strip() for o in origins.split(",") if o.strip()],
         prover=parse_prover(os.environ.get("HEIST_PROVER")),
     )
-    app = create_app(config, rate_limiter=RateLimiter(limit=10_000))
+    # No commit memo either: each run must see its own fresh commit.
+    app = create_app(config, rate_limiter=RateLimiter(limit=10_000), resolve_ttl_s=0)
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 

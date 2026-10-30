@@ -56,7 +56,7 @@ def test_memory_store_failed_runs_are_not_cached():
     store = MemoryStore()
     aid = store.create(REPO, SHA, id="given-id")
     assert aid == "given-id"
-    store.fail(aid, "nope")
+    store.fail(aid, "nope", repo=REPO, sha=SHA)
     assert store.get_by_repo_sha(REPO, SHA) is None
     got = store.get(aid)
     assert got is not None and got.status == "error" and got.error == "nope"
@@ -191,14 +191,42 @@ def test_supabase_finish_upserts_the_whole_row(scene: Scene):
     assert body["finished_at"]
 
 
-def test_supabase_fail_patches_the_row():
-    rec = Recorder(status=204)
-    _store(rec).fail("abc", "We couldn't fetch that repo.")
+def test_supabase_fail_upserts_repo_and_commit_too():
+    rec = Recorder(status=201)
+    _store(rec).fail("abc", "We couldn't fetch that repo.", repo=REPO, sha=SHA)
     req = rec.last
-    assert req.method == "PATCH" and _params(req) == {"id": "eq.abc"}
+    # An upsert, so a failed run is kept even when its `create` never reached the database.
+    assert req.method == "POST" and req.url.path == "/rest/v1/analyses"
+    assert _params(req) == {"on_conflict": "id"}
+    assert req.headers["prefer"] == "resolution=merge-duplicates,return=minimal"
     body = json.loads(req.content)
+    assert body["id"] == "abc" and body["repo"] == REPO and body["sha"] == SHA
     assert body["status"] == "error" and body["error"] == "We couldn't fetch that repo."
-    assert body["finished_at"]
+    assert body["finished_at"] and "scene" not in body
+
+
+def test_supabase_finish_of_an_already_cached_commit_drops_its_own_row(scene: Scene, caplog):
+    caplog.set_level(logging.INFO)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "POST":  # the unique done index: this commit is already cached
+            return httpx.Response(409, json={"code": "23505"})
+        return httpx.Response(204)
+
+    SupabaseStore(BASE, KEY, transport=httpx.MockTransport(handler)).finish("abc", scene)
+    assert [r.method for r in seen] == ["POST", "DELETE"]
+    # Only this run's own unfinished row goes; the cached done row stays.
+    assert _params(seen[1]) == {"id": "eq.abc", "status": "neq.done"}
+    assert "already cached" in caplog.text
+    assert KEY not in caplog.text and BASE not in caplog.text
+
+
+def test_memory_store_fail_without_create_is_kept():
+    store = MemoryStore()
+    store.fail("late", "nope", repo=REPO, sha=SHA)
+    assert store.get("late") == StoredAnalysis("late", REPO, SHA, "error", None, "nope")
 
 
 def test_supabase_spend_reads_the_day_and_adds_by_rpc():
@@ -239,7 +267,7 @@ def test_supabase_failures_never_raise_or_leak(transport, scene: Scene, caplog):
     aid = store.create(REPO, SHA)
     assert aid  # the analysis still gets an id and runs in memory
     store.finish(aid, scene)
-    store.fail(aid, "x")
+    store.fail(aid, "x", repo=REPO, sha=SHA)
     assert store.spend_on(date(2026, 11, 3)) is None
     assert store.add_spend(date(2026, 11, 3), 1.0) is None
     logged = caplog.text

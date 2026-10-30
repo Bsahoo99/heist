@@ -154,3 +154,24 @@ def test_client_ip_falls_back_to_the_peer(forwarded: tuple[str, ...], hops: int)
 
 def test_client_ip_without_a_peer():
     assert client_ip(_request(None)) == "unknown"
+
+
+def test_ipv6_clients_are_counted_per_64_prefix():
+    # One home or VM usually gets a whole /64; rotating inside it must not reset the limit.
+    limiter = RateLimiter(limit=2, window_s=3600, clock=Clock())
+    assert limiter.allow("2001:db8:1:2::1") and limiter.allow("2001:db8:1:2:ffff::9")
+    assert limiter.allow("2001:db8:1:2:abcd::1") is False
+    assert limiter.allow("2001:db8:1:3::1") is True  # the next /64 is someone else
+    # IPv4 stays per address, also when written as an IPv4-mapped IPv6 address.
+    assert limiter.allow("192.0.2.1") and limiter.allow("::ffff:192.0.2.1")
+    assert limiter.allow("192.0.2.1") is False
+    assert limiter.allow("192.0.2.2") is True
+
+
+def test_guard_copy_is_plain_and_promises_only_cached_results():
+    from heist.guards import RATE_LIMIT, RATE_LIMIT_COPY, SPEND_CAP_COPY
+
+    for copy in (RATE_LIMIT_COPY, SPEND_CAP_COPY):
+        assert "example" not in copy.lower()
+        assert "already checked" in copy
+    assert f"{RATE_LIMIT} new heists" in RATE_LIMIT_COPY

@@ -15,6 +15,7 @@ import asyncio
 import logging
 import re
 import sys
+import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -49,6 +50,8 @@ from heist.store import MemoryStore, Store, new_id, repo_key, store_from_env
 log = logging.getLogger(__name__)
 
 MAX_RUNNING = 2
+RESOLVE_TTL_S = 60.0  # how long a repo's commit is remembered between requests
+MAX_RESOLVING = 8  # `git ls-remote` subprocesses at once
 MAX_RECORDS = 50
 DEFAULT_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 NOT_FOUND_COPY = "This analysis is gone. Run it again."
@@ -202,10 +205,10 @@ class StartIn(BaseModel):
     url: str
 
 
-def _safely[T](op: str, fn: Callable[..., T], *args: Any) -> T | None:
+def _safely[T](op: str, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T | None:
     """A store call that can never sink an analysis: failures are logged by type only."""
     try:
-        return fn(*args)
+        return fn(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 - the store is a cache, not a dependency
         log.warning("store %s failed: %s", op, type(exc).__name__)
         return None
@@ -228,7 +231,18 @@ def _work(
         else:
             loop.call_soon_threadsafe(record.publish, e)
 
-    _safely("create", store.create, repo_key(record.url), record.sha, record.id)
+    repo = repo_key(record.url)
+
+    def fail(message: str) -> None:
+        loop.call_soon_threadsafe(record.fail, ProgressEvent(kind="error", message=message))
+        _safely("fail", store.fail, record.id, message, repo=repo, sha=record.sha)
+
+    # The cap is checked again here, when the run really starts: runs admitted before the
+    # day's budget ran out may have waited in the queue since.
+    if not spend_cap.allow():
+        fail(SPEND_CAP_COPY)
+        return
+    _safely("create", store.create, repo, record.sha, record.id)
     client: MetaClient | None = None
     try:
         # One client per analysis: clients are not shared across threads. Built inside the
@@ -238,9 +252,7 @@ def _work(
     except Exception as exc:  # noqa: BLE001 - the pipeline already emitted the error copy
         reason = exc.reason if isinstance(exc, UnsupportedRepo) else GENERIC_ERROR_COPY
         error = next((e for e in terminal if e.kind == "error"), None)
-        error = error or ProgressEvent(kind="error", message=reason)
-        loop.call_soon_threadsafe(record.fail, error)
-        _safely("fail", store.fail, record.id, error.message)
+        fail(error.message if error else reason)
     else:
         done = next((e for e in terminal if e.kind == "done"), None)
         loop.call_soon_threadsafe(
@@ -275,6 +287,7 @@ def create_app(
     rate_limiter: RateLimiter | None = None,
     spend_cap: SpendCap | None = None,
     max_records: int = MAX_RECORDS,
+    resolve_ttl_s: float = RESOLVE_TTL_S,
 ) -> FastAPI:
     """The engine app. `store` defaults to memory; `store_from_env()` picks Supabase."""
     kept: Store = store if store is not None else MemoryStore()
@@ -284,6 +297,23 @@ def create_app(
     prove = prover_fn(config.prover)
     pool = ThreadPoolExecutor(max_workers=MAX_RUNNING, thread_name_prefix="heist-analysis")
     tasks: set[asyncio.Future[None]] = set()  # submitted and not finished: running or queued
+    # Before any guard runs, every POST asks GitHub for the commit. Remember a repo's commit
+    # for a minute and cap the subprocesses, so a burst of requests stays cheap.
+    commits: dict[str, tuple[str, float]] = {}
+    resolving = asyncio.Semaphore(MAX_RESOLVING)
+
+    async def resolve(url: str, repo: str) -> str:
+        now = time.monotonic()
+        known = commits.get(repo)
+        if known is not None and known[1] > now:
+            return known[0]
+        async with resolving:
+            sha = await asyncio.to_thread(fetch.resolve_head, url)
+        if resolve_ttl_s > 0:
+            for key in [k for k, (_, until) in commits.items() if until <= now]:
+                del commits[key]
+            commits[repo] = (sha, now + resolve_ttl_s)
+        return sha
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -317,7 +347,7 @@ def create_app(
         url = f"https://github.com/{owner}/{name}"
         repo = repo_key(url)
         try:
-            sha = await asyncio.to_thread(fetch.resolve_head, url)
+            sha = await resolve(url, repo)
         except UnsupportedRepo as exc:
             return _error(400, exc.reason)
         except Exception as exc:  # noqa: BLE001 - whatever went wrong, the repo was not fetched

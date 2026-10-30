@@ -8,7 +8,7 @@ const BAD_URL_COPY = "Paste a public GitHub repo URL, like https://github.com/yo
 const CLONE_FAILED_COPY = "We couldn't fetch that repo. Make sure it is public and the URL is right.";
 const RATE_LIMIT_COPY =
   "You've started 5 new heists in the last hour. Try again later. " +
-  "Repos Heist has already checked, like the examples, still open right away.";
+  "Repos Heist has already checked still open right away.";
 const UNSUPPORTED_COPY =
   "Heist supports Vite + React + Supabase and Next.js + Supabase apps. This stack is not supported yet.";
 

@@ -1,5 +1,9 @@
 """Heist's own Supabase database passes Heist's own checks (plan Task 18, step 5), offline.
 
+It forces the `next_supabase` stack: the public repo as a whole is not a Supabase app Heist can
+detect, so Heist run on its URL ends in "not supported yet". This is an offline check of Heist's
+own database, never a live self-scan.
+
 The scan covers the code Heist ships: every tracked file except `engine/tests/`, whose fixtures
 and test data hold deliberately broken apps and fake keys for the detectors to find.
 """

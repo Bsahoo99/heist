@@ -24,13 +24,13 @@ RATE_WINDOW_S = 3600
 DAILY_USD = 20.0
 MAX_TRACKED_CLIENTS = 10_000
 
+CACHED_STILL_OPEN = "Repos Heist has already checked still open right away."
 RATE_LIMIT_COPY = (
-    "You've started 5 new heists in the last hour. Try again later. "
-    "Repos Heist has already checked, like the examples, still open right away."
+    f"You've started {RATE_LIMIT} new heists in the last hour. Try again later. "
+    + CACHED_STILL_OPEN
 )
 SPEND_CAP_COPY = (
-    "Heist has used up today's budget for new heists. Try again tomorrow. "
-    "Repos Heist has already checked, like the examples, still open right away."
+    "Heist has used up today's budget for new heists. Try again tomorrow. " + CACHED_STILL_OPEN
 )
 
 
@@ -61,8 +61,9 @@ class RateLimiter:
 
     def allow(self, ip: str) -> bool:
         now = self._clock()
+        key = rate_key(ip)
         with self._lock:
-            hits = self._hits.setdefault(ip, deque())
+            hits = self._hits.setdefault(key, deque())
             self._expire(hits, now)
             if len(hits) >= self.limit:
                 return False
@@ -80,6 +81,22 @@ class RateLimiter:
     def tracked(self) -> int:
         with self._lock:
             return len(self._hits)
+
+
+def rate_key(ip: str) -> str:
+    """The bucket a client is counted in: an IPv4 address, or an IPv6 address's /64.
+
+    A single IPv6 user usually holds a whole /64, so counting addresses would let them rotate.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
 
 
 def utc_today() -> date:
@@ -145,10 +162,11 @@ def _is_ip(value: str) -> bool:
 def client_ip(request: Request, trusted_hops: int = 0) -> str:
     """The address a rate limit should count.
 
-    `trusted_hops=0` (the default, and right on Modal) uses the socket peer. Modal's web
-    functions get the caller's address as the ASGI client and Modal strips any
-    X-Forwarded-For the caller sent (see `_add_forwarded_for_header` in
-    `modal/_runtime/asgi.py`, modal 1.6.2), so a forged header changes nothing.
+    `trusted_hops=0` (the default, and right on Modal) uses the socket peer. For an
+    `@modal.asgi_app` the ASGI `client` is filled from the input's `client_host`
+    (`modal/_serialization.py`, modal 1.6.2), which Modal's own ingress sets; headers the
+    caller sends are never read, so a forged X-Forwarded-For changes nothing. Smoke check 9 in
+    docs/deploy.md confirms this on the live deploy.
 
     Behind N proxies we run ourselves, `trusted_hops=N` reads the Nth X-Forwarded-For entry
     from the right: the one our outermost proxy wrote. The leftmost entries are whatever the

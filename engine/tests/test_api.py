@@ -411,7 +411,12 @@ async def test_same_sha_returns_cached(client, clones):
     assert len(clones) == 1
 
 
-async def test_a_new_commit_runs_again(client, clones, shas):
+async def test_a_new_commit_runs_again(clones, shas):
+    async with client_for(create_app(OFFLINE, resolve_ttl_s=0)) as client:
+        await _new_commit_runs_again(client, clones, shas)
+
+
+async def _new_commit_runs_again(client: AsyncClient, clones: list[str], shas: dict[str, str]):
     first = await start(client, VULN_URL)
     await wait_done(client, first)
     shas[VULN_URL] = "1" * 40
@@ -424,7 +429,7 @@ async def test_a_new_commit_runs_again(client, clones, shas):
 
 
 async def test_rate_limit_counts_only_uncached(clones, shas):
-    app = create_app(OFFLINE)
+    app = create_app(OFFLINE, resolve_ttl_s=0)
     ids: list[str] = []
     async with client_for(app, ip="1.1.1.1") as c:
         cached = await start(c, VULN_URL)
@@ -607,7 +612,7 @@ class BrokenStore(MemoryStore):
     def finish(self, id: str, scene: Any) -> None:
         raise RuntimeError("down")
 
-    def fail(self, id: str, reason: str) -> None:
+    def fail(self, id: str, reason: str, *, repo: str, sha: str) -> None:
         raise RuntimeError("down")
 
 
@@ -631,3 +636,72 @@ def test_trusted_proxy_hops_come_from_the_environment(monkeypatch: pytest.Monkey
     monkeypatch.setenv("HEIST_TRUSTED_PROXY_HOPS", "lots")
     with pytest.raises(SystemExit, match=api.BAD_HOPS_COPY):
         ApiConfig.from_env()
+
+
+async def test_the_spend_cap_also_stops_runs_that_were_queued(clones, gate):
+    gate.clear()
+    store = MemoryStore()
+    cap = SpendCap(daily_usd=20.0, ledger=store)
+    async with client_for(create_app(OFFLINE, store=store, spend_cap=cap)) as c:
+        a = await start(c, VULN_URL)
+        b = await start(c, CLEAN_URL)
+        queued = await start(c, PLAIN_URL)  # both workers are busy: it waits its turn
+        cap.record(20.0)  # the day's budget runs out while it waits
+        gate.set()
+        events = await wait_done(c, queued)
+        await wait_done(c, a)
+        await wait_done(c, b)
+        assert events[-1] == {"kind": "error", "message": SPEND_CAP_COPY, "data": {}}
+        body = (await c.get(f"/analyses/{queued}")).json()
+        assert body["status"] == "error" and body["error"] == SPEND_CAP_COPY
+    assert PLAIN_URL not in clones  # it never fetched anything
+    saved = store.get(queued)
+    assert saved is not None and saved.status == "error" and saved.sha == STUB_SHA
+
+
+async def test_the_commit_of_a_repo_is_remembered_briefly(monkeypatch: pytest.MonkeyPatch, clones):
+    calls: list[str] = []
+
+    def resolve(url: str) -> str:
+        calls.append(url)
+        return STUB_SHA
+
+    monkeypatch.setattr(fetch, "resolve_head", resolve)
+    async with client_for(create_app(OFFLINE)) as c:
+        aid = await start(c, VULN_URL)
+        await wait_done(c, aid)
+        for spelling in (VULN_URL, "github.com/Heist-Fixtures/vuln-app.git"):
+            assert (await post(c, spelling)).json() == {"id": aid, "cached": True}
+    assert len(calls) == 1
+    async with client_for(create_app(OFFLINE, resolve_ttl_s=0)) as c:
+        for _ in range(2):
+            r = await post(c, VULN_URL)
+            await wait_done(c, r.json()["id"])
+    assert len(calls) == 3
+
+
+async def test_ls_remote_runs_at_most_eight_at_once(monkeypatch: pytest.MonkeyPatch, clones):
+    lock = threading.Lock()
+    release = threading.Event()
+    active = [0, 0]  # now, most at once
+
+    def resolve(url: str) -> str:
+        with lock:
+            active[0] += 1
+            active[1] = max(active[1], active[0])
+        release.wait(timeout=10)
+        with lock:
+            active[0] -= 1
+        raise UnsupportedRepo(CLONE_FAILED_COPY)
+
+    monkeypatch.setattr(fetch, "resolve_head", resolve)
+    async with client_for(create_app(OFFLINE)) as c:
+        posts = [
+            asyncio.create_task(post(c, stub_url(f"repo-{i}"))) for i in range(12)
+        ]
+        await asyncio.sleep(0.3)
+        assert active[1] == 8
+        release.set()
+        results = await asyncio.gather(*posts)
+    assert all(r.status_code == 400 for r in results)
+    assert active[1] == 8

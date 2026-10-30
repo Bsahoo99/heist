@@ -79,7 +79,9 @@ class Store(SpendLedger, Protocol):
         """Mark it done. Repo and commit come from the Scene, so this works without `create`."""
         ...
 
-    def fail(self, id: str, reason: str) -> None: ...
+    def fail(self, id: str, reason: str, *, repo: str, sha: str) -> None:
+        """Mark it failed; carries repo and commit, so this too works without `create`."""
+        ...
 
 
 def _now() -> str:
@@ -122,10 +124,8 @@ class MemoryStore:
         repo, sha = repo_key(scene.meta.repo), scene.meta.commit_sha
         self._put(StoredAnalysis(id, repo, sha, "done", scene, None))
 
-    def fail(self, id: str, reason: str) -> None:
-        old = self.get(id)
-        if old is not None:
-            self._put(StoredAnalysis(id, old.repo, old.sha, "error", None, reason))
+    def fail(self, id: str, reason: str, *, repo: str, sha: str) -> None:
+        self._put(StoredAnalysis(id, repo, sha, "error", None, reason))
 
     def spend_on(self, day: date) -> float | None:
         with self._lock:
@@ -139,6 +139,10 @@ class MemoryStore:
 
 class StoreError(Exception):
     """A failed store call. The message is a safe token: an HTTP status or an error type."""
+
+    def __init__(self, token: str, status: int | None = None):
+        super().__init__(token)
+        self.status = status
 
 
 class SupabaseStore:
@@ -184,7 +188,7 @@ class SupabaseStore:
         except httpx.HTTPError as exc:
             raise StoreError(type(exc).__name__) from None
         if r.status_code >= 400:
-            raise StoreError(f"HTTP {r.status_code}")
+            raise StoreError(f"HTTP {r.status_code}", r.status_code)
         if not r.content:
             return None
         try:
@@ -244,25 +248,46 @@ class SupabaseStore:
             "finished_at": _now(),
         }
         # An upsert: a row whose `create` failed is still written in full.
-        self._safe(
-            "finish",
-            lambda: self._call(
-                "POST",
-                "/analyses",
-                params={"on_conflict": "id"},
-                body=body,
-                prefer="resolution=merge-duplicates,return=minimal",
-            ),
+        try:
+            self._upsert(body)
+        except StoreError as exc:
+            if exc.status != 409:
+                log.warning("store finish failed: %s", exc)
+                return
+            # The unique done index: another run of this commit finished first. Its row is
+            # the cache; drop this run's own unfinished row so nothing stays `running`.
+            log.info("store finish: already cached (%s)", exc)
+            self._safe(
+                "finish cleanup",
+                lambda: self._call(
+                    "DELETE",
+                    "/analyses",
+                    params={"id": f"eq.{id}", "status": "neq.done"},
+                    prefer="return=minimal",
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - the store must never sink an analysis
+            log.warning("store finish failed: %s", type(exc).__name__)
+
+    def _upsert(self, body: dict[str, Any]) -> None:
+        self._call(
+            "POST",
+            "/analyses",
+            params={"on_conflict": "id"},
+            body=body,
+            prefer="resolution=merge-duplicates,return=minimal",
         )
 
-    def fail(self, id: str, reason: str) -> None:
-        body = {"status": "error", "error": reason, "finished_at": _now()}
-        self._safe(
-            "fail",
-            lambda: self._call(
-                "PATCH", "/analyses", params={"id": f"eq.{id}"}, body=body, prefer="return=minimal"
-            ),
-        )
+    def fail(self, id: str, reason: str, *, repo: str, sha: str) -> None:
+        body = {
+            "id": id,
+            "repo": repo,
+            "sha": sha,
+            "status": "error",
+            "error": reason,
+            "finished_at": _now(),
+        }
+        self._safe("fail", lambda: self._upsert(body))
 
     def spend_on(self, day: date) -> float | None:
         params = {"select": "usd", "day": f"eq.{day.isoformat()}"}
