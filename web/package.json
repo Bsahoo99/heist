@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test": "vitest run --passWithNoTests",
     "e2e": "playwright test",
+    "export": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/export-replay.ts",
     "typecheck": "tsc --noEmit",
     "gen:scene": "json2ts ../shared/scene.schema.json -o lib/scene.gen.ts",
     "gen:art": "node scripts/gen-art-manifest.mjs",

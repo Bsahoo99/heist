@@ -1067,66 +1067,100 @@ body {
   }
 }
 
-/* Recording layout (?video=1): one column, the map as large as the viewport
-   allows (100dvh minus 186 px for the header line, a two-line caption and the
-   player), and a
-   caption big enough to read in a video. */
-.results[data-layout="video"] {
+/* Recording layout (?record=1, `pnpm export`): the map as large as the
+   viewport allows and a fixed-height caption under it (the end card takes the
+   same height), so nothing moves, scrolls or gets cut off at 1280x720. */
+.results[data-layout="record"] {
+  --record-caption: 100px;
   max-width: none;
   padding: 8px 16px;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "head" "stage";
-  grid-template-rows: auto auto;
+  /* One row: the desktop grid's other rows would add their gaps under the caption. */
+  grid-template: "stage" auto / minmax(0, 1fr);
 }
-.results[data-layout="video"] .results-head {
-  flex-wrap: nowrap;
-}
-.results[data-layout="video"] .results-title {
-  font-size: 19px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.results[data-layout="video"] .results-sub {
-  display: none;
-}
-.results[data-layout="video"] .results-stage,
-.results[data-layout="video"] .replay {
+.results[data-layout="record"] .results-stage,
+.results[data-layout="record"] .replay {
   gap: 8px;
 }
-.results[data-layout="video"] .replay-map {
+.results[data-layout="record"] .replay-map {
   padding: 0;
 }
-.results[data-layout="video"] .replay-map .citymap-wide .citymap-svg,
-.results[data-layout="video"] .replay-map .citymap-full .citymap-svg {
-  height: calc(100dvh - 186px);
+.results[data-layout="record"] .replay-map .citymap-wide .citymap-svg,
+.results[data-layout="record"] .replay-map .citymap-full .citymap-svg {
+  /* The page's padding, the gap, the caption and the map box's border. */
+  height: calc(100dvh - 16px - 8px - var(--record-caption) - 2px);
   max-height: none;
 }
-.results[data-layout="video"] .replay-caption {
+.results[data-layout="record"] .replay-caption,
+.results[data-layout="record"] .replay-end {
+  height: var(--record-caption);
   min-height: 0;
+  overflow: hidden;
 }
-/* The player already names the phase and the header carries the key: the
-   caption is the story alone, so a two-line story still fits. */
-.results[data-layout="video"] .replay-caption-row {
-  display: none;
+.results[data-layout="record"] .replay-legend {
+  font-size: 15px;
 }
-.results[data-layout="video"] .replay-legend {
-  flex: none;
-  margin-left: auto;
+.results[data-layout="record"] .replay-caption-phase {
+  font-size: 15px;
 }
-.results[data-layout="video"] .replay-caption-story {
-  margin-top: 2px;
+.results[data-layout="record"] .replay-caption-story {
+  margin-top: 4px;
   max-width: none;
   font-size: 22px;
   line-height: 1.3;
 }
-.results[data-layout="video"] .replay-end {
-  min-height: 0;
-  padding: 4px 12px;
+.results[data-layout="record"] .replay-end {
+  padding: 8px 16px;
 }
-.results[data-layout="video"] .step-player {
-  padding: 6px 12px;
+.results[data-layout="record"] .replay-end-kicker[data-status="confirmed"],
+.results[data-layout="record"] .replay-end-kicker[data-status="proved"] {
+  color: var(--map-flag-ink);
+}
+.results[data-layout="record"] .replay-end-title {
+  font-size: 22px;
+}
+
+/* Exported replay downloads, beside the badge or at the top of the list. */
+.export-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 12px 16px;
+}
+.export-links h2 {
+  flex: 1 1 auto;
+  font-size: 15px;
+  font-weight: 600;
+}
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.export-link {
+  border-radius: 999px;
+  border: 1px solid var(--map-lamp);
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--map-lamp);
+  text-decoration: none;
+}
+.export-link:hover {
+  background: var(--map-lamp);
+  color: #1d1405;
+}
+.export-link:focus-visible {
+  outline: 2px solid var(--map-ghost);
+  outline-offset: 2px;
+}
+.results-list .export-links {
+  margin-bottom: 16px;
 }
 
 /* Site bar on the analysis page: the way home and the repo name. */
@@ -1358,15 +1392,15 @@ a.site-mark:focus-visible {
 .live-map [data-active] {
   transition: opacity 700ms ease-out;
 }
-.live[data-layout="video"] {
+.live[data-layout="record"] {
   max-width: none;
   padding: 8px 16px;
   gap: 8px;
 }
-.live[data-layout="video"] .live-map {
+.live[data-layout="record"] .live-map {
   padding: 0;
 }
-.live[data-layout="video"] .live-map .citymap-full .citymap-svg {
+.live[data-layout="record"] .live-map .citymap-full .citymap-svg {
   height: calc(100dvh - 60px);
 }
 .live-status {

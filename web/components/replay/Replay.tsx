@@ -5,6 +5,7 @@ import { motion, useReducedMotion, useTransform, type MotionValue } from "motion
 import type { Scene, SceneFinding } from "@/lib/scene.gen";
 import { CityMap } from "@/components/map/CityMap";
 import { boxRect, layoutLabels, partialPath, placeItems, routePath, type Point, type Rect } from "@/components/map/layout";
+import { STATUS_LABEL } from "@/components/panels/FindingsList";
 import { ProofRows } from "@/components/panels/ProofRows";
 import { badgeText } from "@/lib/badge";
 import { rulesCoverage, unreadMigrationsCopy, type RulesCoverage } from "@/lib/coverage";
@@ -233,7 +234,7 @@ function PhaseKey({ phase }: { phase: ReplayView["phase"] }) {
   return <span className="phase-key phase-key-attack" aria-hidden="true" />;
 }
 
-/** The map key: which line is which. Shown for findings, beside the phase (or in the recording layout's header). */
+/** The map key: which line is which. Shown for findings, beside the phase. */
 export function Legend() {
   return (
     <ul className="replay-legend" aria-label="Map key">
@@ -293,9 +294,21 @@ const CLEAN_END: Record<RulesCoverage, { kicker: string; title: string }> = {
 /**
  * Shown in the caption's place once the replay is over, so it never covers the
  * map. A clean run ends on the heist failing; without all the database rules
- * it says only what Heist could test.
+ * it says only what Heist could test. A recording has no player to point at
+ * and nothing to click: a finding's card names it and its status instead.
  */
-function EndCard({ scene, clean, onAgain }: { scene: Scene; clean: boolean; onAgain: () => void }): ReactNode {
+function EndCard({
+  scene,
+  finding,
+  record,
+  onAgain,
+}: {
+  scene: Scene;
+  finding: SceneFinding | null;
+  record: boolean;
+  onAgain: () => void;
+}): ReactNode {
+  const clean = finding === null;
   const coverage = rulesCoverage(scene);
   const full = coverage === "full";
   const words = CLEAN_END[coverage];
@@ -314,6 +327,15 @@ function EndCard({ scene, clean, onAgain }: { scene: Scene; clean: boolean; onAg
             <p className="replay-end-text">{unreadMigrationsCopy(scene.meta.unparsed_migrations.length)}</p>
           )}
         </div>
+      ) : record ? (
+        <div className="replay-end-words">
+          <p className="replay-end-kicker" data-status={finding.status}>
+            {STATUS_LABEL[finding.status]}
+          </p>
+          <p className="replay-end-title" data-testid="replay-end-title">
+            {finding.title}
+          </p>
+        </div>
       ) : (
         <div className="replay-end-words">
           <p className="replay-end-title" data-testid="replay-end-title">
@@ -323,9 +345,11 @@ function EndCard({ scene, clean, onAgain }: { scene: Scene; clean: boolean; onAg
         </div>
       )}
       {clean && full && <p className="replay-badge">{badgeText(scene)}</p>}
-      <button type="button" className="replay-again" onClick={onAgain}>
-        Watch again
-      </button>
+      {!record && (
+        <button type="button" className="replay-again" onClick={onAgain}>
+          Watch again
+        </button>
+      )}
     </div>
   );
 }
@@ -346,6 +370,7 @@ export function Replay({
   clock: external,
   idPrefix = "replay",
   wideBox = WIDE_BOX,
+  record = false,
 }: {
   scene: Scene;
   finding: SceneFinding | null;
@@ -354,6 +379,8 @@ export function Replay({
   idPrefix?: string;
   /** Size (px) of the wide map box before it is measured (first render and SSR). */
   wideBox?: { width: number; height: number };
+  /** The recording layout: an end card with nothing to click. */
+  record?: boolean;
 }) {
   const timeline = useMemo(() => buildTimeline(finding, scene), [finding, scene]);
   const own = useReplayClock(timeline, { autoPlay: external ? false : autoPlay });
@@ -454,7 +481,12 @@ export function Replay({
         )}
       </div>
       {ended ? (
-        <EndCard scene={scene} clean={plan.kind === "clean"} onAgain={() => clock.setPlaying(true)} />
+        <EndCard
+          scene={scene}
+          finding={finding}
+          record={record}
+          onAgain={() => clock.setPlaying(true)}
+        />
       ) : (
         <Caption view={view} plan={plan} finding={finding} />
       )}

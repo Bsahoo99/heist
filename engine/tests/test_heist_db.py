@@ -1,4 +1,6 @@
-"""Heist's own database (supabase/migrations/0001_heist.sql): only the service role gets in.
+"""Heist's own database (supabase/migrations/): only the service role gets in.
+
+0001 holds the tables, 0002 the private `exports` bucket for the exported replays.
 
 Applied the way Supabase applies it: on top of Heist's stub of what Supabase provides, as the
 migration role whose default privileges hand every new table to anon and authenticated.
@@ -15,7 +17,9 @@ from psycopg import sql
 
 from heist.prove.runner import STUB_PATH
 
-MIGRATION = Path(__file__).resolve().parents[2] / "supabase/migrations/0001_heist.sql"
+MIGRATIONS = Path(__file__).resolve().parents[2] / "supabase/migrations"
+MIGRATION = MIGRATIONS / "0001_heist.sql"
+EXPORTS_MIGRATION = MIGRATIONS / "0002_exports_bucket.sql"
 OUTSIDERS = ("anon", "authenticated")
 
 pytestmark = pytest.mark.docker
@@ -42,6 +46,7 @@ def heist_db(pg_container: Any) -> Iterator[psycopg.Connection[Any]]:
         with conn.transaction():
             conn.execute("set local role heist_migrator")
             conn.execute(MIGRATION.read_bytes())
+            conn.execute(EXPORTS_MIGRATION.read_bytes())
         yield conn
 
 
@@ -120,3 +125,25 @@ def test_service_role_reads_and_updates_analyses(heist_db):
         heist_db.execute("update public.analyses set status = 'done' where id = 'a'")
         heist_db.execute("delete from public.analyses where id = 'a' and status <> 'done'")
         assert heist_db.execute("select count(*) from public.analyses").fetchone() == (1,)
+
+
+def test_exports_bucket_is_private_and_small(heist_db):
+    row = heist_db.execute(
+        "select public, file_size_limit, allowed_mime_types from storage.buckets where id = 'exports'"
+    ).fetchone()
+    assert row == (False, 50 * 1024 * 1024, ["video/mp4", "image/gif", "image/png"])
+
+
+def test_exports_bucket_migration_runs_twice(heist_db):
+    with heist_db.transaction():
+        heist_db.execute("set local role heist_migrator")
+        heist_db.execute(EXPORTS_MIGRATION.read_bytes())
+    assert heist_db.execute("select count(*) from storage.buckets").fetchone() == (1,)
+
+
+def test_exports_bucket_adds_no_storage_policies(heist_db):
+    # No policy at all: only the service role (which skips RLS) reaches the files.
+    assert heist_db.execute(
+        "select count(*) from pg_policies where schemaname = 'storage'"
+    ).fetchone() == (0,)
+    assert "create policy" not in EXPORTS_MIGRATION.read_text().lower()

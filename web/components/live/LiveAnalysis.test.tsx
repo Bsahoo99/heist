@@ -5,13 +5,14 @@ import { vulnScene } from "@/tests/helpers/scenes";
 
 const api = vi.hoisted(() => ({
   getAnalysis: vi.fn(),
+  getExports: vi.fn(),
   subscribe: vi.fn(),
   listeners: [] as ((e: ProgressEvent) => void)[],
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/api")>();
-  return { ...real, getAnalysis: api.getAnalysis, subscribe: api.subscribe };
+  return { ...real, getAnalysis: api.getAnalysis, getExports: api.getExports, subscribe: api.subscribe };
 });
 
 vi.mock("next/link", () => ({
@@ -37,6 +38,7 @@ const flush = () => act(async () => {});
 beforeEach(() => {
   api.listeners = [];
   api.getAnalysis.mockReset();
+  api.getExports.mockReset().mockResolvedValue({ mp4: null, gif: null, png: null });
   api.subscribe.mockReset().mockImplementation((_id: string, on: (e: ProgressEvent) => void) => {
     api.listeners.push(on);
     return () => {};
@@ -114,5 +116,45 @@ describe("LiveAnalysis", () => {
     await flush();
     expect(h1()).toBe("Lost the connection");
     expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+  });
+
+  describe("record mode", () => {
+    test("a finished analysis plays without the site bar and sets no failure", async () => {
+      api.getAnalysis.mockResolvedValue({ ...running, status: "done", scene: vulnScene });
+      const { container } = render(<LiveAnalysis id="x" layout="record" />);
+      await flush();
+      expect(container.querySelector(".site-bar")).toBeNull();
+      expect(screen.getByTestId("replay").getAttribute("data-state")).toBe("playing");
+      expect(document.body.dataset.done).toBeUndefined();
+    });
+
+    test("a failed heist, an unknown id or an unreachable engine flags done as failed", async () => {
+      api.getAnalysis.mockResolvedValue(running);
+      render(<LiveAnalysis id="x" layout="record" />);
+      await flush();
+      expect(document.body.dataset.done).toBeUndefined();
+      await send({ kind: "error", message: "This stack is not supported yet.", data: {} });
+      expect(document.body.dataset.done).toBe("failed");
+      cleanup();
+      expect(document.body.dataset.done).toBeUndefined();
+
+      api.getAnalysis.mockResolvedValue(null);
+      render(<LiveAnalysis id="x" layout="record" />);
+      await flush();
+      expect(document.body.dataset.done).toBe("failed");
+      cleanup();
+
+      api.getAnalysis.mockRejectedValue(new Error("down"));
+      render(<LiveAnalysis id="x" layout="record" />);
+      await flush();
+      expect(document.body.dataset.done).toBe("failed");
+    });
+
+    test("the normal layout never flags", async () => {
+      api.getAnalysis.mockResolvedValue(null);
+      render(<LiveAnalysis id="x" />);
+      await flush();
+      expect(document.body.dataset.done).toBeUndefined();
+    });
   });
 });

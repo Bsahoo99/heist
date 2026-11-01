@@ -45,7 +45,14 @@ from heist.models import ProgressEvent
 from heist.pipeline import GENERIC_ERROR_COPY, Prove, run_analysis
 from heist.prove.sandbox import Prover, prove_local, prove_rls, warm_in_background
 from heist.scene import Scene
-from heist.store import MemoryStore, Store, new_id, repo_key, store_from_env
+from heist.store import (
+    MemoryStore,
+    Store,
+    new_id,
+    no_export_links,
+    repo_key,
+    store_from_env,
+)
 
 log = logging.getLogger(__name__)
 
@@ -413,6 +420,14 @@ def create_app(
             "error": record.error,
             "url": record.url,
         }
+
+    @app.get("/analyses/{aid}/exports")
+    async def exports(aid: str) -> Any:
+        """Short-lived signed links to the exported replay (MP4, GIF, poster PNG), never cached."""
+        if not ID_RE.match(aid):
+            return _error(404, NOT_FOUND_COPY)
+        links = await asyncio.to_thread(_safely, "export links", kept.export_links, aid)
+        return JSONResponse(links or no_export_links(), headers={"Cache-Control": "no-store"})
 
     @app.get("/analyses/{aid}/events")
     async def events(aid: str) -> Any:

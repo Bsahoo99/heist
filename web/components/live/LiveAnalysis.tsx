@@ -104,6 +104,9 @@ function Notice({
  * the engine replays past events), then the results with the worst finding
  * playing. Errors are shown in the engine's plain words. A dropped connection
  * is not a failed heist: it gets its own notice and can be picked up again.
+ *
+ * In record mode (`layout="record"`) a failed, unknown or unreachable analysis
+ * sets `document.body.dataset.done = "failed"`, so `pnpm export` stops.
  */
 export function LiveAnalysis({ id, layout = "normal" }: { id: string; layout?: ResultsLayout }) {
   const [state, setState] = useState<State>({ phase: "live", events: [] });
@@ -150,6 +153,17 @@ export function LiveAnalysis({ id, layout = "normal" }: { id: string; layout?: R
       unsubscribe();
     };
   }, [id, attempt]);
+
+  // Record mode: an analysis that failed or is unknown ends the recording at once.
+  const failed = state.phase === "error" || state.phase === "lost" || state.phase === "gone";
+  useEffect(() => {
+    if (layout !== "record" || !failed) return;
+    const flags = document.body.dataset;
+    flags.done = "failed";
+    return () => {
+      delete flags.done;
+    };
+  }, [layout, failed]);
 
   const reload = () => {
     setState({ phase: "live", events: [] });

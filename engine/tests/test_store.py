@@ -286,3 +286,94 @@ def test_store_from_env_picks_the_backend(monkeypatch: pytest.MonkeyPatch):
     store = store_from_env()
     assert isinstance(store, SupabaseStore)
     assert KEY not in repr(store)
+
+
+# ---------------------------------------------------------------------------------------------
+# Exported replays (private bucket `exports`, signed links)
+
+NO_EXPORTS = {"mp4": None, "gif": None, "png": None}
+
+
+def _signed(name: str) -> dict[str, Any]:
+    return {
+        "error": None,
+        "path": name,
+        "signedURL": f"/object/sign/exports/{name}?token=tok-{name}",
+    }
+
+
+def _missing(name: str) -> dict[str, Any]:
+    return {
+        "error": "Either the object does not exist or you do not have access to it",
+        "path": name,
+        "signedURL": None,
+    }
+
+
+def test_memory_store_has_no_exports():
+    assert MemoryStore().export_links("abc") == NO_EXPORTS
+
+
+def test_supabase_export_links_sign_all_three_in_one_request():
+    rec = Recorder(reply=[_signed("abc.mp4"), _signed("abc.gif"), _signed("abc.png")])
+    links = _store(rec).export_links("abc")
+    assert len(rec.requests) == 1
+    req = rec.last
+    assert req.method == "POST"
+    assert str(req.url) == f"{BASE}/storage/v1/object/sign/exports"
+    assert json.loads(req.content) == {
+        "expiresIn": 3600,
+        "paths": ["abc.mp4", "abc.gif", "abc.png"],
+    }
+    assert req.headers["apikey"] == KEY and "authorization" not in req.headers
+    storage = f"{BASE}/storage/v1/object/sign/exports"
+    assert links == {
+        "mp4": f"{storage}/abc.mp4?token=tok-abc.mp4&download=heist-abc.mp4",
+        "gif": f"{storage}/abc.gif?token=tok-abc.gif&download=heist-abc.gif",
+        "png": f"{storage}/abc.png?token=tok-abc.png",
+    }
+    assert all(KEY not in v for v in links.values() if v)
+
+
+def test_supabase_export_links_send_a_legacy_key_as_the_bearer_too():
+    rec = Recorder(reply=[])
+    _store(rec, JWT_KEY).export_links("abc")
+    assert rec.last.headers["authorization"] == f"Bearer {JWT_KEY}"
+
+
+def test_supabase_export_links_leave_out_missing_files():
+    rec = Recorder(reply=[_signed("abc.mp4"), _missing("abc.gif"), _missing("abc.png")])
+    links = _store(rec).export_links("abc")
+    assert links["mp4"] is not None and links["gif"] is None and links["png"] is None
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        [],
+        {"message": "not a list"},
+        [{"path": "abc.mp4", "signedURL": "https://elsewhere.example/abc.mp4"}],
+        [{"path": "abc.mp4", "signedURL": "/object/sign/exports/abc.mp4"}],  # no token
+        ["abc.mp4"],
+    ],
+)
+def test_supabase_export_links_odd_replies_are_null(reply: Any):
+    assert _store(Recorder(reply=reply)).export_links("abc") == NO_EXPORTS
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [
+        httpx.MockTransport(_down),
+        httpx.MockTransport(
+            lambda r: httpx.Response(400, json={"statusCode": "404", "error": "not_found"})
+        ),
+        httpx.MockTransport(lambda r: httpx.Response(500, json={"message": "secret detail"})),
+        httpx.MockTransport(lambda r: httpx.Response(200, content=b"not json")),
+    ],
+)
+def test_supabase_export_links_failures_are_null_and_never_leak(transport, caplog):
+    store = SupabaseStore(BASE, KEY, transport=transport)
+    with caplog.at_level(logging.INFO):
+        assert store.export_links("abc") == NO_EXPORTS
+    assert KEY not in caplog.text and "secret detail" not in caplog.text and BASE not in caplog.text

@@ -38,7 +38,7 @@ export function FindingsList({
     return <p className="findings-empty">{emptyText}</p>;
   }
   return (
-    <ul className="findings-list">
+    <ul className="findings-list" data-testid="findings-list">
       {findings.map((f) => (
         <li key={f.id}>
           <button

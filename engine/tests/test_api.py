@@ -10,7 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient, Response
 
 from heist import fetch, pipeline
-from heist.api import BUSY_COPY, QUEUED_COPY, ApiConfig, create_app
+from heist.api import BUSY_COPY, NOT_FOUND_COPY, QUEUED_COPY, ApiConfig, create_app
 from heist.fetch import (
     BAD_URL_COPY,
     CLONE_FAILED_COPY,
@@ -615,6 +615,9 @@ class BrokenStore(MemoryStore):
     def fail(self, id: str, reason: str, *, repo: str, sha: str) -> None:
         raise RuntimeError("down")
 
+    def export_links(self, id: str) -> Any:
+        raise RuntimeError("down")
+
 
 async def test_a_broken_store_never_blocks_an_analysis(clones):
     async with client_for(create_app(OFFLINE, store=BrokenStore())) as c:
@@ -705,3 +708,48 @@ async def test_ls_remote_runs_at_most_eight_at_once(monkeypatch: pytest.MonkeyPa
         results = await asyncio.gather(*posts)
     assert all(r.status_code == 400 for r in results)
     assert active[1] == 8
+
+
+NO_EXPORTS = {"mp4": None, "gif": None, "png": None}
+
+
+class ExportingStore(MemoryStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.asked: list[str] = []
+
+    def export_links(self, id: str) -> Any:
+        self.asked.append(id)
+        return {"mp4": f"https://s/{id}.mp4", "gif": None, "png": f"https://s/{id}.png"}
+
+
+async def test_exports_are_the_stores_signed_links_never_cached():
+    store = ExportingStore()
+    async with client_for(create_app(OFFLINE, store=store)) as c:
+        r = await c.get("/analyses/abc_D-1/exports")
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-store"
+    assert r.json() == {"mp4": "https://s/abc_D-1.mp4", "gif": None, "png": "https://s/abc_D-1.png"}
+    assert store.asked == ["abc_D-1"]
+
+
+async def test_exports_of_a_memory_store_are_all_null():
+    async with client_for(create_app(OFFLINE)) as c:
+        r = await c.get("/analyses/abc/exports")
+    assert r.status_code == 200 and r.json() == NO_EXPORTS
+
+
+async def test_exports_refuse_a_bad_id_without_asking_the_store():
+    store = ExportingStore()
+    async with client_for(create_app(OFFLINE, store=store)) as c:
+        for bad in ("a" * 65, "a.b", "a%20b"):
+            r = await c.get(f"/analyses/{bad}/exports")
+            assert r.status_code == 404, bad
+            assert r.json() == {"error": NOT_FOUND_COPY}
+    assert store.asked == []
+
+
+async def test_exports_of_a_broken_store_are_all_null():
+    async with client_for(create_app(OFFLINE, store=BrokenStore())) as c:
+        r = await c.get("/analyses/abc/exports")
+    assert r.status_code == 200 and r.json() == NO_EXPORTS

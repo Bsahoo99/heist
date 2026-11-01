@@ -11,6 +11,8 @@ Create a new project in the Supabase dashboard (name `heist`, a US East region, 
 Open Project Settings, API, and keep the page open: you need the project URL and the service role (secret) key.
 Open the SQL editor, paste all of `supabase/migrations/0001_heist.sql` and run it once.
 In Table Editor, check that `analyses` and `spend_daily` exist and both show RLS enabled with no policies.
+Then paste all of `supabase/migrations/0002_exports_bucket.sql` and run it too; it is safe to run again.
+In Storage, check that the bucket `exports` exists, is not public and has no policies: only the service role reaches the exported replays, and the engine hands out signed links that expire after an hour.
 
 ## 2. Fill engine/.env
 
@@ -97,3 +99,16 @@ Set two shell variables first, so the commands below need no editing: `ENGINE=ht
 10. Restart survives: with no analysis running, run `HEIST_WEB_ORIGINS=$WEB uv run modal deploy heist/modal_app.py` again from `engine/`, then reopen an earlier `/a/<id>` page; it still shows the results, now from Supabase.
 11. Heist's own database passes Heist's checks: this is an offline test (`engine/tests/test_self_scan.py`), not something the live site shows.
 Run on Heist's own public repo, the site ends in "This stack is not supported yet", because the repo as a whole is not a Supabase app Heist can detect.
+
+## 9. Export a replay and share it
+
+The MP4, GIF and poster frame of a replay are made on your machine and uploaded to the private `exports` bucket.
+Vercel holds no secret for them: the engine signs the links with the Supabase key it already has.
+You need ffmpeg (`brew install ffmpeg`) and Playwright's Chromium (`cd web && pnpm exec playwright install chromium`).
+Run the web app locally against the production engine, so it opens the cached analysis: from `web/`, run `NEXT_PUBLIC_ENGINE_URL=$ENGINE pnpm dev`.
+In a second shell, from `web/`, run `pnpm export --id <analysis id> --engine $ENGINE`.
+It films `/a/<id>?record=1` at 1280x720, writes `web/exports/<id>.mp4`, `<id>.gif` and `<id>.png` (gitignored), and uploads the three with the Supabase values from the environment or `engine/.env`; it never prints them.
+Add `--no-upload` to only write the files, and watch the MP4 and GIF before sharing them.
+Check the share page: `$WEB/a/<id>` now shows "Download MP4" and "Download GIF", and `curl -s "$ENGINE/analyses/<id>/exports"` returns three signed links.
+Paste `$WEB/a/<id>` into a link preview checker (or a draft post on X) and check the card shows the poster frame with the repo and the top finding.
+A signed link stops working after an hour; the page asks the engine for fresh ones on every visit.

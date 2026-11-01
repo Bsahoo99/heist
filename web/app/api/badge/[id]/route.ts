@@ -1,8 +1,6 @@
-import { ENGINE_URL, getAnalysis } from "@/lib/api";
+import { isAnalysisId } from "@/lib/analysisId";
+import { getAnalysis, serverEngineUrl } from "@/lib/api";
 import { badgeSvg, badgeText, badgeTone } from "@/lib/badge";
-
-/** Engine ids are `secrets.token_urlsafe(9)`; anything else never reaches the engine. */
-const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Give up on the engine after this long, so a stuck engine never holds a README image open. */
 const ENGINE_TIMEOUT_MS = 5_000;
@@ -31,8 +29,8 @@ function errorKind(err: unknown): string {
  */
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
   const { id } = await ctx.params;
-  if (!ID.test(id)) return notFound();
-  const base = process.env.HEIST_ENGINE_URL || ENGINE_URL;
+  if (!isAnalysisId(id)) return notFound();
+  const base = serverEngineUrl();
   const analysis = await getAnalysis(id, { base, signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS) }).catch(
     (err: unknown) => {
       // Error types only: no URL (it holds the id) and nothing from the engine's body.

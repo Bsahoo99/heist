@@ -5,6 +5,15 @@ import type { Scene } from "./scene.gen";
 // `||`, not `??`: an empty variable (as in .env.example) falls back to the local engine.
 export const ENGINE_URL = (process.env.NEXT_PUBLIC_ENGINE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
+/**
+ * Where server code (the badge route, the share page's metadata and image)
+ * reaches the engine: `HEIST_ENGINE_URL` when set, an address only the server
+ * can reach, else the same URL the browser uses.
+ */
+export function serverEngineUrl(): string {
+  return process.env.HEIST_ENGINE_URL || ENGINE_URL;
+}
+
 export const LOST_CONNECTION_COPY = "Lost the connection to the engine. Refresh to pick up where it left off.";
 export const UNREACHABLE_COPY = "We couldn't reach the Heist engine. Try again in a moment.";
 const UNEXPECTED_COPY = "Something went wrong on our side. Please try again.";
@@ -99,4 +108,25 @@ export function subscribe(id: string, onEvent: (e: ProgressEvent) => void): () =
     onEvent({ kind: "error", message: LOST_CONNECTION_COPY, data: {} });
   };
   return stop;
+}
+
+/** Signed links to an analysis's exported replay (`pnpm export`); null for each file not exported. */
+export type Exports = { mp4: string | null; gif: string | null; png: string | null };
+
+const NO_EXPORTS: Exports = { mp4: null, gif: null, png: null };
+
+const httpUrl = (v: unknown): string | null => (typeof v === "string" && /^https?:\/\//.test(v) ? v : null);
+
+/** The exported replay's links. Never throws: an unknown id or any failure is all nulls. */
+export async function getExports(id: string, opts?: RequestOptions): Promise<Exports> {
+  try {
+    const res = await request(`/analyses/${encodeURIComponent(id)}/exports`, undefined, opts);
+    if (!res.ok) return NO_EXPORTS;
+    const body: unknown = await res.json();
+    if (!body || typeof body !== "object") return NO_EXPORTS;
+    const b = body as Record<string, unknown>;
+    return { mp4: httpUrl(b.mp4), gif: httpUrl(b.gif), png: httpUrl(b.png) };
+  } catch {
+    return NO_EXPORTS;
+  }
 }

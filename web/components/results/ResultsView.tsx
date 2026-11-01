@@ -5,23 +5,27 @@ import type { Scene, SceneFinding } from "@/lib/scene.gen";
 import { ZONES } from "@/components/map/layout";
 import { FindingsList, SEVERITY_LABEL, StatusBadge } from "@/components/panels/FindingsList";
 import { BadgeBlock } from "@/components/panels/BadgeBlock";
+import { ExportLinks, useExports } from "@/components/panels/ExportLinks";
 import { FixCard } from "@/components/panels/FixCard";
 import { NoRulesCard } from "@/components/panels/NoRulesCard";
 import { ProofRows } from "@/components/panels/ProofRows";
 import { StepPanel } from "@/components/panels/StepPanel";
-import { Legend, Replay } from "@/components/replay/Replay";
+import { Replay } from "@/components/replay/Replay";
 import { StepPlayer } from "@/components/replay/StepPlayer";
+import { useRecordFlags } from "@/components/replay/useRecordFlags";
 import { useReplayClock } from "@/components/replay/useReplayClock";
+import type { Exports } from "@/lib/api";
 import { offersBadge } from "@/lib/badge";
 import { rulesCoverage, unreadMigrationsCopy } from "@/lib/coverage";
 import { buildTimeline, playerSteps } from "@/lib/timeline";
 
-export type ResultsLayout = "normal" | "video";
+/** "record" is the recording layout (`?record=1`, `pnpm export`): the map and the caption only. */
+export type ResultsLayout = "normal" | "record";
 
 /** Nominal size (px) of the map box in each layout at 1280x720, for the steady wide frame. */
 const WIDE_BOX: Record<ResultsLayout, { width: number; height: number }> = {
   normal: { width: 892, height: 438 },
-  video: { width: 1248, height: 540 },
+  record: { width: 1248, height: 594 },
 };
 
 function itemLabel(scene: Scene, id: string): string | undefined {
@@ -39,6 +43,7 @@ function FindingStage({
   autoPlay,
   layout,
   badgeId,
+  exports,
 }: {
   scene: Scene;
   finding: SceneFinding | null;
@@ -46,6 +51,8 @@ function FindingStage({
   layout: ResultsLayout;
   /** The analysis id when the clean run offers its README badge here. */
   badgeId?: string;
+  /** The exported replay's links, shown under the badge here. */
+  exports: Exports | null;
 }) {
   const coverage = rulesCoverage(scene);
   const timeline = useMemo(() => buildTimeline(finding, scene), [finding, scene]);
@@ -54,6 +61,8 @@ function FindingStage({
   // Every event but the end is a player step; the end keeps the last one.
   const index = Math.max(0, Math.min(clock.eventIndex, steps.length - 1));
   const ended = timeline[clock.eventIndex]?.kind === "end" && !clock.playing;
+  const record = layout === "record";
+  useRecordFlags(clock, ended, record);
   const current = steps[index];
   const where = current
     ? [ZONES[current.step.zone].label, itemLabel(scene, current.step.item_id)].filter(Boolean).join(": ")
@@ -61,54 +70,56 @@ function FindingStage({
 
   return (
     <>
-      <header className="results-head">
-        {finding ? (
-          <>
-            <div className="results-head-tags">
-              <span className="finding-severity" data-severity={finding.severity}>
-                {SEVERITY_LABEL[finding.severity]}
-              </span>
-              <StatusBadge status={finding.status} />
-            </div>
-            <h1 className="results-title">{finding.title}</h1>
-            {/* The recording layout keeps the caption to the story alone, so the key moves up here. */}
-            {layout === "video" && <Legend />}
-          </>
-        ) : coverage === "full" ? (
-          <>
-            <h1 className="results-title">Every lock held</h1>
-            <p className="results-sub">Heist tried every door of {scene.meta.repo} and found no way in.</p>
-          </>
-        ) : coverage === "partial" ? (
-          // Rules in the unread files were never checked: no "every lock".
-          <>
-            <h1 className="results-title">No way in found</h1>
-            <p className="results-sub">
-              Heist found no way into {scene.meta.repo}, but{" "}
-              {unreadMigrationsCopy(scene.meta.unparsed_migrations.length)}
-            </p>
-          </>
-        ) : (
-          // Mistakes 3 and 4 need the database rules: never claim those locks held.
-          <>
-            <h1 className="results-title">No way in through the code</h1>
-            <p className="results-sub">
-              Heist found no way in through the code of {scene.meta.repo}, but it could not check your database rules.
-            </p>
-          </>
-        )}
-      </header>
+      {!record && (
+        <header className="results-head">
+          {finding ? (
+            <>
+              <div className="results-head-tags">
+                <span className="finding-severity" data-severity={finding.severity}>
+                  {SEVERITY_LABEL[finding.severity]}
+                </span>
+                <StatusBadge status={finding.status} />
+              </div>
+              <h1 className="results-title">{finding.title}</h1>
+            </>
+          ) : coverage === "full" ? (
+            <>
+              <h1 className="results-title">Every lock held</h1>
+              <p className="results-sub">Heist tried every door of {scene.meta.repo} and found no way in.</p>
+            </>
+          ) : coverage === "partial" ? (
+            // Rules in the unread files were never checked: no "every lock".
+            <>
+              <h1 className="results-title">No way in found</h1>
+              <p className="results-sub">
+                Heist found no way into {scene.meta.repo}, but{" "}
+                {unreadMigrationsCopy(scene.meta.unparsed_migrations.length)}
+              </p>
+            </>
+          ) : (
+            // Mistakes 3 and 4 need the database rules: never claim those locks held.
+            <>
+              <h1 className="results-title">No way in through the code</h1>
+              <p className="results-sub">
+                Heist found no way in through the code of {scene.meta.repo}, but it could not check your database rules.
+              </p>
+            </>
+          )}
+        </header>
+      )}
 
       <section className="results-stage" aria-label="Replay">
-        <Replay scene={scene} finding={finding} clock={clock} wideBox={WIDE_BOX[layout]} />
-        <StepPlayer
-          steps={steps}
-          index={index}
-          ended={ended}
-          onIndex={clock.seek}
-          playing={clock.playing}
-          onPlayingChange={clock.setPlaying}
-        />
+        <Replay scene={scene} finding={finding} clock={clock} wideBox={WIDE_BOX[layout]} record={record} />
+        {!record && (
+          <StepPlayer
+            steps={steps}
+            index={index}
+            ended={ended}
+            onIndex={clock.seek}
+            playing={clock.playing}
+            onPlayingChange={clock.setPlaying}
+          />
+        )}
       </section>
 
       {layout === "normal" && (
@@ -125,6 +136,7 @@ function FindingStage({
             </section>
           )}
           {!finding && badgeId && <BadgeBlock scene={scene} id={badgeId} />}
+          {!finding && badgeId && <ExportLinks exports={exports} />}
         </div>
       )}
       {/* Under the panel on phones; under the replay on wide screens, where the diff has room. */}
@@ -142,15 +154,18 @@ function FindingStage({
  * first) with its step player and panel, and the list of every finding.
  * Map on top on phones, on the left on wide screens.
  *
- * `layout="video"` is for screen recordings: one column with the header line,
- * the map as large as the viewport allows, the caption and the player; no
- * side panel, findings list, fix, missing-rules or badge cards.
+ * `layout="record"` is for recordings (`pnpm export`): the map as large as the
+ * viewport allows and the caption, auto-playing to an end card; no header,
+ * player, side panel, findings list, fix, missing-rules, badge or download
+ * cards. It flags its progress on the body for the export (`useRecordFlags`).
  *
  * The selected finding's fix sits under its step panel on phones and under
  * the replay on wide screens. Without database rules the missing-rules card
  * comes before the list (under the replay on wide screens, so the query gets
  * the full width) and replaces it when there are no findings. With an `id`,
  * every check held and every migration read, the README badge is offered.
+ * With an `id`, links to the exported replay (MP4 and GIF) follow the badge,
+ * or open the list when there is no badge, once the engine has them.
  */
 export function ResultsView({
   scene,
@@ -177,6 +192,9 @@ export function ResultsView({
   const coverage = rulesCoverage(scene);
   const rulesMissing = coverage === "none";
   const hasFindings = scene.findings.length > 0;
+  const exports = useExports(layout === "normal" ? id : undefined);
+  // The clean run's badge sits in the panel and the links go under it; otherwise they lead the list.
+  const exportsInPanel = !finding && Boolean(badgeId);
 
   const onSelect = (id: string) => {
     setSelected({ id, play: true });
@@ -196,6 +214,7 @@ export function ResultsView({
         autoPlay={selected.play}
         layout={layout}
         badgeId={badgeId}
+        exports={exports}
       />
       {layout === "normal" && rulesMissing && (
         <div className="results-rules">
@@ -206,6 +225,7 @@ export function ResultsView({
         <div className="results-list">
           {/* Only possible findings, every check held: the badge is earned, offer it above the list. */}
           {hasFindings && badgeId && <BadgeBlock scene={scene} id={badgeId} />}
+          {!exportsInPanel && <ExportLinks exports={exports} />}
           {(hasFindings || !rulesMissing) && (
             <section aria-labelledby="results-list-title">
               <h2 id="results-list-title" className="results-list-title">

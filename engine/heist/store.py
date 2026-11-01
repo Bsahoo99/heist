@@ -6,6 +6,10 @@ Two backends behind one `Store` protocol:
   PostgREST, with the service role key, server side only. Chosen by `store_from_env` when
   `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are both set.
 
+The exported replays (`pnpm export` in web/) live in the private Storage bucket `exports`
+(`supabase/migrations/0002_exports_bucket.sql`) as `<id>.mp4`, `<id>.gif` and `<id>.png`;
+`export_links` hands out short-lived signed links to them, never the bucket itself.
+
 A store is a cache, never a dependency: `SupabaseStore` swallows every failure, logs only the
 operation and the error type or HTTP status (never the key, a URL or a Scene), and answers
 "unknown" (`None`), so an analysis carries on in memory.
@@ -22,6 +26,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol
+from urllib.parse import quote
 
 import httpx
 from pydantic import ValidationError
@@ -35,6 +40,19 @@ Status = Literal["running", "done", "error"]
 STATUSES: tuple[Status, ...] = ("running", "done", "error")
 MEMORY_LIMIT = 500
 SUPABASE_TIMEOUT_S = 5.0
+
+ExportKind = Literal["mp4", "gif", "png"]
+EXPORT_KINDS: tuple[ExportKind, ...] = ("mp4", "gif", "png")
+EXPORTS_BUCKET = "exports"
+EXPORT_LINK_TTL_S = 3600
+# Signed with a download name, so the browser saves them; the poster is only ever shown.
+DOWNLOADED: tuple[ExportKind, ...] = ("mp4", "gif")
+type ExportLinks = dict[ExportKind, str | None]
+
+
+def no_export_links() -> ExportLinks:
+    links: ExportLinks = {kind: None for kind in EXPORT_KINDS}
+    return links
 
 
 def repo_key(url: str) -> str:
@@ -83,6 +101,10 @@ class Store(SpendLedger, Protocol):
         """Mark it failed; carries repo and commit, so this too works without `create`."""
         ...
 
+    def export_links(self, id: str) -> ExportLinks:
+        """Signed links to the analysis's exported replay files; `None` for each one not there."""
+        ...
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -127,6 +149,9 @@ class MemoryStore:
     def fail(self, id: str, reason: str, *, repo: str, sha: str) -> None:
         self._put(StoredAnalysis(id, repo, sha, "error", None, reason))
 
+    def export_links(self, id: str) -> ExportLinks:
+        return no_export_links()  # exports only ever go to Supabase Storage
+
     def spend_on(self, day: date) -> float | None:
         with self._lock:
             return self._spend.get(day, 0.0)
@@ -163,6 +188,7 @@ class SupabaseStore:
         # `sb_secret_` keys are not JWTs: the gateway takes them in `apikey` only.
         if service_role_key.startswith("eyJ"):
             headers["Authorization"] = f"Bearer {service_role_key}"
+        self._storage = url.rstrip("/") + "/storage/v1"
         self._http = httpx.Client(
             base_url=url.rstrip("/") + "/rest/v1",
             headers=headers,
@@ -288,6 +314,33 @@ class SupabaseStore:
             "finished_at": _now(),
         }
         self._safe("fail", lambda: self._upsert(body))
+
+    def export_links(self, id: str) -> ExportLinks:
+        """One batch sign request for the three files; a missing file or any failure is `None`."""
+        names: dict[ExportKind, str] = {kind: f"{id}.{kind}" for kind in EXPORT_KINDS}
+        body = {"expiresIn": EXPORT_LINK_TTL_S, "paths": list(names.values())}
+
+        def run() -> ExportLinks:
+            # An absolute URL: Storage sits beside PostgREST, not under it.
+            url = f"{self._storage}/object/sign/{EXPORTS_BUCKET}"
+            rows = self._call("POST", url, body=body)
+            signed = {
+                str(r.get("path")): r.get("signedURL")
+                for r in (rows if isinstance(rows, list) else [])
+                if isinstance(r, dict)
+            }
+            links = no_export_links()
+            for kind, name in names.items():
+                path = signed.get(name)
+                if not isinstance(path, str) or not path.startswith("/") or "?" not in path:
+                    continue  # not exported (the row carries an error instead)
+                link = f"{self._storage}{path}"
+                if kind in DOWNLOADED:
+                    link += f"&download={quote(f'heist-{name}')}"
+                links[kind] = link
+            return links
+
+        return self._safe("export links", run) or no_export_links()
 
     def spend_on(self, day: date) -> float | None:
         params = {"select": "usd", "day": f"eq.{day.isoformat()}"}

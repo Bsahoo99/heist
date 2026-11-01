@@ -1,8 +1,8 @@
 // DEV ONLY: the results layout (replay, step player, panels) against the
 // test fixtures. Not part of the product; it returns 404 in production builds.
-// Usage: /dev/replay?scene=vuln|clean&finding=<finding id>&proved=1&video=1
+// Usage: /dev/replay?scene=vuln|clean&finding=<finding id>&proved=1&record=1
 //   proved=1 marks the first confirmed m3 finding as proved, with the two
-//   fake proof users. video=1 shows the recording layout without the dev bar.
+//   fake proof users. record=1 (or video=1) shows the recording layout without the dev bar.
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -31,7 +31,7 @@ async function DevReplay({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
   const sceneKey = one(params.scene) === "clean" ? "clean" : "vuln";
   const proved = sceneKey === "vuln" && one(params.proved) === "1";
-  const video = one(params.video) === "1";
+  const record = one(params.record) === "1" || one(params.video) === "1";
   let scene: Scene = sceneKey === "clean" ? cleanScene : vulnScene;
   let findingId = one(params.finding);
   if (proved) {
@@ -47,7 +47,7 @@ async function DevReplay({ searchParams }: { searchParams: SearchParams }) {
 
   return (
     <main className="results-page">
-      {!video && (
+      {!record && (
         <header className="dev-bar">
           <span className="dev-tag">Dev preview</span>
           <p className="dev-repo">{scene.meta.repo}</p>
@@ -61,10 +61,10 @@ async function DevReplay({ searchParams }: { searchParams: SearchParams }) {
         </header>
       )}
       <ResultsView
-        key={`${sceneKey}-${proved}-${findingId ?? ""}-${video}`}
+        key={`${sceneKey}-${proved}-${findingId ?? ""}-${record}`}
         scene={scene}
         initialFindingId={findingId}
-        layout={video ? "video" : "normal"}
+        layout={record ? "record" : "normal"}
       />
     </main>
   );

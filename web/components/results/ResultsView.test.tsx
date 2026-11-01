@@ -1,14 +1,37 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { ResultsView } from "./ResultsView";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { cleanScene, vulnScene, withProvedFinding } from "@/tests/helpers/scenes";
+import type { Exports } from "@/lib/api";
 import type { Scene } from "@/lib/scene.gen";
 import { fixtureScene } from "@/tests/helpers/fixtureScene";
+
+const api = vi.hoisted(() => ({ getExports: vi.fn() }));
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/api")>();
+  return { ...real, getExports: api.getExports };
+});
+
+const { ResultsView } = await import("./ResultsView");
 
 const withMeta = (scene: Scene, meta: Partial<Scene["meta"]>): Scene => ({ ...scene, meta: { ...scene.meta, ...meta } });
 const BADGE_HEADING = "Add the badge to your README";
 
-afterEach(cleanup);
+const NONE: Exports = { mp4: null, gif: null, png: null };
+const SIGNED: Exports = {
+  mp4: "https://x.supabase.co/storage/v1/object/sign/exports/abc.mp4?token=t&download=heist-abc.mp4",
+  gif: "https://x.supabase.co/storage/v1/object/sign/exports/abc.gif?token=t&download=heist-abc.gif",
+  png: "https://x.supabase.co/storage/v1/object/sign/exports/abc.png?token=t",
+};
+const flush = () => act(async () => {});
+
+beforeEach(() => {
+  api.getExports.mockReset().mockResolvedValue(NONE);
+});
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("ResultsView", () => {
   test("normal layout: replay, player, panel, legend and the findings list", () => {
@@ -20,14 +43,17 @@ describe("ResultsView", () => {
     expect(container.querySelector(".citymap-wide svg")).not.toBeNull();
   });
 
-  test("video layout: header line, map, caption and player only", () => {
-    const { container } = render(<ResultsView scene={vulnScene} autoPlay={false} layout="video" />);
-    expect(container.querySelector(".results")!.getAttribute("data-layout")).toBe("video");
-    expect(screen.getByRole("heading", { name: vulnScene.findings[0].title })).toBeTruthy();
-    expect(screen.getByRole("group", { name: "Step player" })).toBeTruthy();
+  test("record layout: the map and the caption only", () => {
+    const { container } = render(<ResultsView scene={vulnScene} id="abc" autoPlay={false} layout="record" />);
+    expect(container.querySelector(".results")!.getAttribute("data-layout")).toBe("record");
+    expect(container.querySelector(".citymap-wide svg")).not.toBeNull();
     expect(container.querySelector(".replay-caption")).not.toBeNull();
+    expect(container.querySelector(".results-head")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Step player" })).toBeNull();
     expect(screen.queryAllByRole("tab")).toHaveLength(0);
     expect(screen.queryByText(/All findings/)).toBeNull();
+    // Nothing to download in a recording: the engine is not even asked.
+    expect(api.getExports).not.toHaveBeenCalled();
   });
 
   test("the replay says whether it is playing", () => {
@@ -56,13 +82,87 @@ describe("ResultsView", () => {
     expect(screen.getByText(vulnScene.findings[0].fix.explanation)).toBeTruthy();
   });
 
-  test("video layout: no fix, rules or badge cards", () => {
-    render(<ResultsView scene={withMeta(vulnScene, { has_db_rules: false })} autoPlay={false} layout="video" />);
+  test("record layout: no fix, rules or badge cards", () => {
+    render(<ResultsView scene={withMeta(vulnScene, { has_db_rules: false })} autoPlay={false} layout="record" />);
     expect(screen.queryByRole("heading", { name: "How to fix it" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "We can't see your database rules" })).toBeNull();
     cleanup();
-    render(<ResultsView scene={cleanScene} id="abc" autoPlay={false} layout="video" />);
+    render(<ResultsView scene={cleanScene} id="abc" autoPlay={false} layout="record" />);
     expect(screen.queryByRole("heading", { name: BADGE_HEADING })).toBeNull();
+  });
+
+  test("record layout: flags started, the climax, then done once the end card has held", async () => {
+    vi.useFakeTimers();
+    const flags = document.body.dataset;
+    render(<ResultsView scene={vulnScene} layout="record" />);
+    await act(() => vi.advanceTimersByTimeAsync(50));
+    expect(flags.started).toBe("true");
+    expect(flags.climax).toBeUndefined();
+    expect(flags.done).toBeUndefined();
+    // Past the end of the replay (at most 30 s): the end card shows, with nothing to click.
+    await act(() => vi.advanceTimersByTimeAsync(31_000));
+    expect(screen.getByTestId("replay").getAttribute("data-state")).toBe("ended");
+    expect(flags.climax).toBe("true");
+    expect(screen.getByTestId("replay-end-title").textContent).toBe(vulnScene.findings[0].title);
+    expect(screen.queryByRole("button", { name: "Watch again" })).toBeNull();
+    expect(flags.done).toBeUndefined();
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(flags.done).toBe("true");
+    cleanup();
+    expect(flags.started).toBeUndefined();
+    expect(flags.done).toBeUndefined();
+  });
+
+  test("normal layout sets no record flags", async () => {
+    vi.useFakeTimers();
+    render(<ResultsView scene={vulnScene} />);
+    await act(() => vi.advanceTimersByTimeAsync(32_000));
+    expect(screen.getByTestId("replay").getAttribute("data-state")).toBe("ended");
+    expect(document.body.dataset.started).toBeUndefined();
+    expect(document.body.dataset.done).toBeUndefined();
+  });
+
+  test("downloads: MP4 and GIF links at the top of the list when exported", async () => {
+    api.getExports.mockResolvedValue(SIGNED);
+    const { container } = render(<ResultsView scene={vulnScene} id="abc" autoPlay={false} />);
+    await flush();
+    expect(api.getExports).toHaveBeenCalledTimes(1);
+    expect(api.getExports).toHaveBeenCalledWith("abc");
+    const mp4 = screen.getByRole("link", { name: "Download MP4" });
+    expect(mp4.getAttribute("href")).toBe(SIGNED.mp4);
+    expect(screen.getByRole("link", { name: "Download GIF" }).getAttribute("href")).toBe(SIGNED.gif);
+    const list = container.querySelector(".results-list")!;
+    expect(list.contains(mp4)).toBe(true);
+    expect(mp4.compareDocumentPosition(screen.getByText(/All findings/)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("downloads: under the badge on a clean run", async () => {
+    api.getExports.mockResolvedValue({ ...SIGNED, gif: null });
+    const { container } = render(<ResultsView scene={cleanScene} id="abc" autoPlay={false} />);
+    await flush();
+    const mp4 = screen.getByRole("link", { name: "Download MP4" });
+    const badge = screen.getByRole("heading", { name: BADGE_HEADING });
+    expect(container.querySelector(".results-panel")!.contains(mp4)).toBe(true);
+    expect(badge.compareDocumentPosition(mp4) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Download GIF" })).toBeNull();
+  });
+
+  test("downloads: nothing when nothing was exported, or the engine fails", async () => {
+    render(<ResultsView scene={vulnScene} id="abc" autoPlay={false} />);
+    await flush();
+    expect(screen.queryByRole("link", { name: /Download/ })).toBeNull();
+    cleanup();
+    api.getExports.mockRejectedValue(new Error("down"));
+    render(<ResultsView scene={vulnScene} id="abc" autoPlay={false} />);
+    await flush();
+    expect(screen.queryByRole("link", { name: /Download/ })).toBeNull();
+    expect(document.querySelector(".export-links")).toBeNull();
+  });
+
+  test("downloads: pages without an id never ask", async () => {
+    render(<ResultsView scene={vulnScene} autoPlay={false} />);
+    await flush();
+    expect(api.getExports).not.toHaveBeenCalled();
   });
 
   test("missing rules: the card comes before the findings list, in its own grid area", () => {

@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, ENGINE_URL, LOST_CONNECTION_COPY, getAnalysis, startAnalysis, subscribe, type ProgressEvent } from "./api";
+import {
+  ApiError,
+  ENGINE_URL,
+  LOST_CONNECTION_COPY,
+  getAnalysis,
+  getExports,
+  startAnalysis,
+  subscribe,
+  type ProgressEvent,
+} from "./api";
 
 class FakeEventSource {
   static last: FakeEventSource | null = null;
@@ -134,5 +143,33 @@ describe("ENGINE_URL", () => {
     const err = await getAnalysis("abc").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).cause).toBe(cause);
+  });
+});
+
+describe("getExports", () => {
+  const none = { mp4: null, gif: null, png: null };
+
+  it("asks the engine for the id's signed links", async () => {
+    const links = { mp4: "https://s/a.mp4?token=t", gif: "https://s/a.gif?token=t", png: null };
+    const fetch = vi.fn().mockResolvedValue(json(200, links));
+    vi.stubGlobal("fetch", fetch);
+    await expect(getExports("a b")).resolves.toEqual(links);
+    expect(fetch.mock.calls[0][0]).toBe(`${ENGINE_URL}/analyses/a%20b/exports`);
+  });
+
+  it("keeps only http links", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(200, { mp4: "javascript:alert(1)", gif: 3, png: "https://s/a.png" })));
+    await expect(getExports("a")).resolves.toEqual({ mp4: null, gif: null, png: "https://s/a.png" });
+  });
+
+  it("is all nulls for an unknown id, an error status, a bad body or an unreachable engine", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(404, { error: "gone" })));
+    await expect(getExports("a")).resolves.toEqual(none);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(500, {})));
+    await expect(getExports("a")).resolves.toEqual(none);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("not json")));
+    await expect(getExports("a")).resolves.toEqual(none);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+    await expect(getExports("a")).resolves.toEqual(none);
   });
 });
