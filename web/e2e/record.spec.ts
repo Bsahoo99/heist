@@ -47,7 +47,7 @@ async function expectRecordFrame(page: Page) {
 test("record mode finishes within 32s and hides chrome", async ({ page, request }) => {
   const id = await analyze(request, VULN_URL);
   await page.goto(`/a/${id}?record=1`);
-  await expect(page.locator("body")).toHaveAttribute("data-started", "true", { timeout: 15_000 });
+  await expect(page.locator("body")).toHaveAttribute("data-started", /^\d{13}$/, { timeout: 15_000 });
   await expectRecordFrame(page);
   await expect(page.locator("body")).toHaveAttribute("data-done", "true", { timeout: 32_000 });
   // The end card stays in the frame, without the player's buttons.
@@ -58,11 +58,22 @@ test("record mode finishes within 32s and hides chrome", async ({ page, request 
 test("record mode replays a clean run's locks and ends the same way", async ({ page, request }) => {
   const id = await analyze(request, CLEAN_URL);
   await page.goto(`/a/${id}?record=1`);
-  await expect(page.locator("body")).toHaveAttribute("data-started", "true", { timeout: 15_000 });
+  await expect(page.locator("body")).toHaveAttribute("data-started", /^\d{13}$/, { timeout: 15_000 });
   await expectRecordFrame(page);
   await expect(page.getByTestId("replay")).toHaveAttribute("data-phase", "lock-held", { timeout: 15_000 });
   await expect(page.locator("body")).toHaveAttribute("data-done", "true", { timeout: 32_000 });
   await expect(page.getByTestId("replay-end-title")).toHaveText("Your app held up against all seven checks.");
+});
+
+test("the share card is a PNG cached briefly until a poster exists", async ({ request }) => {
+  const id = await analyze(request, VULN_URL);
+  for (const path of [`/a/${id}/opengraph-image`, "/a/not-a-real-id/opengraph-image"]) {
+    const res = await request.get(path);
+    expect(res.status()).toBe(200);
+    expect(res.headers()["content-type"]).toBe("image/png");
+    // The e2e engine keeps no exports, so this is the fallback frame's short cache, never immutable.
+    expect(res.headers()["cache-control"]).toBe("public, max-age=300");
+  }
 });
 
 test("record mode of an unknown analysis fails at once", async ({ page }) => {

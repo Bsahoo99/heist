@@ -79,13 +79,16 @@ async function checkDone(opts: ExportOptions): Promise<void> {
   }
 }
 
-/** Waits for a body flag; record mode's `done="failed"` (an unknown or failed analysis) stops at once. */
+/**
+ * Waits for a body flag (`started` holds a timestamp, the others "true");
+ * record mode's `done="failed"` (an unknown or failed analysis) stops at once.
+ */
 async function waitForFlag(page: Page, flag: "started" | "climax" | "done"): Promise<void> {
   try {
     await page.waitForFunction(
       (name) => {
         const flags = document.body.dataset;
-        return flags.done === "failed" || flags[name] === "true";
+        return flags.done === "failed" || (name === "started" ? Boolean(flags.started) : flags[name] === "true");
       },
       flag,
       { polling: "raf", timeout: WAIT_MS },
@@ -104,22 +107,27 @@ async function film(browser: Browser, url: string, dir: string): Promise<{ webm:
     deviceScaleFactor: 1,
     recordVideo: { dir, size: VIEWPORT },
   });
-  // The video starts with the page.
-  const videoStart = Date.now();
-  const page = await context.newPage();
+  let trim: number;
+  let video: ReturnType<Page["video"]>;
   try {
+    const page = await context.newPage();
+    // The video starts as the page opens. Timed once it has opened, so any error
+    // keeps a few frames of the page before the replay rather than cutting into it.
+    const videoStart = Date.now();
+    video = page.video();
+    if (!video) throw new ExportError("Playwright recorded no video.");
     await page.goto(url);
     await waitForFlag(page, "started");
-    const startedAt = Date.now();
+    // The page's own clock for its first replay frame, not when this script noticed it.
+    const startedAt = Number(await page.evaluate(() => document.body.dataset.started));
+    if (!Number.isFinite(startedAt)) throw new ExportError("The page set data-started without a time.");
+    trim = trimSeconds(videoStart, startedAt);
     await waitForFlag(page, "done");
     await page.waitForTimeout(TAIL_MS);
-    const video = page.video();
-    if (!video) throw new ExportError("Playwright recorded no video.");
-    await context.close(); // writes the video out
-    return { webm: await video.path(), trim: trimSeconds(videoStart, startedAt) };
   } finally {
-    await context.close();
+    await context.close(); // also writes the video out
   }
+  return { webm: await video.path(), trim };
 }
 
 /** The poster: a still of the map at the replay's peak, from the page itself (sharper than a video frame). */
@@ -172,13 +180,18 @@ async function main(): Promise<void> {
     png: join(OUT_DIR, `${opts.id}.png`),
   };
   const url = recordUrl(opts.base, opts.id);
-  const browser = await chromium.launch();
   try {
-    console.log(`Filming ${url}`);
-    const { webm, trim } = await film(browser, url, work);
-    console.log(`Taking the poster frame`);
-    await poster(browser, url, files.png);
-    await browser.close();
+    let webm: string;
+    let trim: number;
+    const browser = await chromium.launch();
+    try {
+      console.log(`Filming ${url}`);
+      ({ webm, trim } = await film(browser, url, work));
+      console.log(`Taking the poster frame`);
+      await poster(browser, url, files.png);
+    } finally {
+      await browser.close();
+    }
 
     ffmpeg(mp4Args(webm, trim, files.mp4), "mp4");
     const palette = join(work, "palette.png");
@@ -189,7 +202,6 @@ async function main(): Promise<void> {
 
     if (target) await upload(target, opts.id, files);
   } finally {
-    await browser.close();
     rmSync(work, { recursive: true, force: true });
   }
 }

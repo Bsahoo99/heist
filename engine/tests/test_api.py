@@ -20,7 +20,8 @@ from heist.fetch import (
 )
 from heist.guards import RATE_LIMIT_COPY, SPEND_CAP_COPY, RateLimiter, SpendCap
 from heist.llm.client import MetaClient
-from heist.pipeline import GENERIC_ERROR_COPY
+from heist.pipeline import GENERIC_ERROR_COPY, run_analysis
+from heist.scene import Scene
 from heist.store import MemoryStore
 
 from .stub_repos import (
@@ -723,8 +724,14 @@ class ExportingStore(MemoryStore):
         return {"mp4": f"https://s/{id}.mp4", "gif": None, "png": f"https://s/{id}.png"}
 
 
-async def test_exports_are_the_stores_signed_links_never_cached():
+@pytest.fixture(scope="module")
+def done_scene() -> Scene:
+    return run_analysis(str(FIXTURES_DIR / "vuln_app"), lambda e: None, None)
+
+
+async def test_exports_are_the_stores_signed_links_never_cached(done_scene: Scene):
     store = ExportingStore()
+    store.finish("abc_D-1", done_scene)  # finished before a restart: only the store has it
     async with client_for(create_app(OFFLINE, store=store)) as c:
         r = await c.get("/analyses/abc_D-1/exports")
     assert r.status_code == 200
@@ -733,23 +740,51 @@ async def test_exports_are_the_stores_signed_links_never_cached():
     assert store.asked == ["abc_D-1"]
 
 
-async def test_exports_of_a_memory_store_are_all_null():
-    async with client_for(create_app(OFFLINE)) as c:
+async def test_exports_of_a_live_finished_analysis(clones):
+    store = ExportingStore()
+    async with client_for(create_app(OFFLINE, store=store)) as c:
+        aid = await start(c, VULN_URL)
+        await wait_done(c, aid)
+        r = await c.get(f"/analyses/{aid}/exports")
+    assert r.status_code == 200 and r.json()["mp4"] == f"https://s/{aid}.mp4"
+    assert store.asked == [aid]
+
+
+async def test_exports_of_a_memory_store_are_all_null(done_scene: Scene):
+    store = MemoryStore()
+    store.finish("abc", done_scene)
+    async with client_for(create_app(OFFLINE, store=store)) as c:
         r = await c.get("/analyses/abc/exports")
     assert r.status_code == 200 and r.json() == NO_EXPORTS
 
 
-async def test_exports_refuse_a_bad_id_without_asking_the_store():
+async def test_exports_refuse_unknown_unfinished_and_bad_ids_without_signing():
     store = ExportingStore()
+    store.create("https://github.com/a/b", "s", id="running")
+    store.fail("failed", "nope", repo="https://github.com/a/b", sha="s")
     async with client_for(create_app(OFFLINE, store=store)) as c:
-        for bad in ("a" * 65, "a.b", "a%20b"):
-            r = await c.get(f"/analyses/{bad}/exports")
-            assert r.status_code == 404, bad
+        for aid in ("unknown", "running", "failed", "a" * 65, "a.b", "a%20b"):
+            r = await c.get(f"/analyses/{aid}/exports")
+            assert r.status_code == 404, aid
             assert r.json() == {"error": NOT_FOUND_COPY}
     assert store.asked == []
 
 
-async def test_exports_of_a_broken_store_are_all_null():
+async def test_exports_of_a_still_running_analysis_are_refused(clones, gate):
+    store = ExportingStore()
+    gate.clear()
+    async with client_for(create_app(OFFLINE, store=store)) as c:
+        aid = await start(c, VULN_URL)
+        r = await c.get(f"/analyses/{aid}/exports")
+        gate.set()
+        await wait_done(c, aid)
+    assert r.status_code == 404
+    assert store.asked == []
+
+
+async def test_exports_of_a_broken_store_are_all_null(clones):
     async with client_for(create_app(OFFLINE, store=BrokenStore())) as c:
-        r = await c.get("/analyses/abc/exports")
+        aid = await start(c, VULN_URL)
+        await wait_done(c, aid)
+        r = await c.get(f"/analyses/{aid}/exports")
     assert r.status_code == 200 and r.json() == NO_EXPORTS

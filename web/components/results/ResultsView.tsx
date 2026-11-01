@@ -5,7 +5,7 @@ import type { Scene, SceneFinding } from "@/lib/scene.gen";
 import { ZONES } from "@/components/map/layout";
 import { FindingsList, SEVERITY_LABEL, StatusBadge } from "@/components/panels/FindingsList";
 import { BadgeBlock } from "@/components/panels/BadgeBlock";
-import { ExportLinks, useExports } from "@/components/panels/ExportLinks";
+import { ExportLinks, useExports, type ExportsState } from "@/components/panels/ExportLinks";
 import { FixCard } from "@/components/panels/FixCard";
 import { NoRulesCard } from "@/components/panels/NoRulesCard";
 import { ProofRows } from "@/components/panels/ProofRows";
@@ -14,7 +14,6 @@ import { Replay } from "@/components/replay/Replay";
 import { StepPlayer } from "@/components/replay/StepPlayer";
 import { useRecordFlags } from "@/components/replay/useRecordFlags";
 import { useReplayClock } from "@/components/replay/useReplayClock";
-import type { Exports } from "@/lib/api";
 import { offersBadge } from "@/lib/badge";
 import { rulesCoverage, unreadMigrationsCopy } from "@/lib/coverage";
 import { buildTimeline, playerSteps } from "@/lib/timeline";
@@ -52,7 +51,7 @@ function FindingStage({
   /** The analysis id when the clean run offers its README badge here. */
   badgeId?: string;
   /** The exported replay's links, shown under the badge here. */
-  exports: Exports | null;
+  exports: ExportsState;
 }) {
   const coverage = rulesCoverage(scene);
   const timeline = useMemo(() => buildTimeline(finding, scene), [finding, scene]);

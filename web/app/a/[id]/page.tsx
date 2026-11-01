@@ -4,7 +4,7 @@ import { connection } from "next/server";
 import { LiveAnalysis, LiveView, SiteBar } from "@/components/live/LiveAnalysis";
 import { isAnalysisId } from "@/lib/analysisId";
 import { getAnalysis, serverEngineUrl } from "@/lib/api";
-import { repoName, shareTitle } from "@/lib/share";
+import { repoName, shareTitle, TAGLINE } from "@/lib/share";
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -23,7 +23,12 @@ export async function generateMetadata({ params }: Pick<Props, "params">): Promi
       )
     : null;
   const title = shareTitle(repoName(analysis?.url));
-  return { title, openGraph: { title }, twitter: { card: "summary_large_image", title } };
+  const description = TAGLINE;
+  return {
+    title,
+    openGraph: { title, description },
+    twitter: { card: "summary_large_image", title, description },
+  };
 }
 
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { cleanScene, vulnScene } from "@/tests/helpers/scenes";
 import type { Scene } from "./scene.gen";
-import { repoName, shareCard, shareTitle, TAGLINE } from "./share";
+import { cardCacheControl, repoName, shareCard, shareTitle, siteUrl, TAGLINE } from "./share";
 
 const withMeta = (scene: Scene, meta: Partial<Scene["meta"]>): Scene => ({ ...scene, meta: { ...scene.meta, ...meta } });
 
@@ -46,4 +46,18 @@ describe("shareCard", () => {
     expect(shareCard(none)).toMatchObject({ headline: "No way in through the code" });
     expect(JSON.stringify(shareCard(none))).not.toMatch(/locks held/);
   });
+});
+
+test("the card is cached briefly without a poster, longer with one, never immutable", () => {
+  expect(cardCacheControl(false)).toBe("public, max-age=300");
+  expect(cardCacheControl(true)).toBe("public, max-age=3600");
+  expect(cardCacheControl(true) + cardCacheControl(false)).not.toMatch(/immutable/);
+});
+
+test("siteUrl takes an http(s) URL and nothing else", () => {
+  expect(siteUrl("https://heist.example")?.origin).toBe("https://heist.example");
+  expect(siteUrl(undefined)).toBeUndefined();
+  expect(siteUrl("")).toBeUndefined();
+  expect(siteUrl("not a url")).toBeUndefined();
+  expect(siteUrl("ftp://heist.example")).toBeUndefined();
 });

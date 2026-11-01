@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { CAMERA_MIN_WIDTH, cameraFrame } from "./camera";
+import { CAMERA_MIN_WIDTH, cameraFrame, cityFrame } from "./camera";
 import { legPoints, stepStopIndices, stopFraction } from "./geometry";
 import {
   VIEWBOX,
@@ -301,6 +301,25 @@ describe("wideFrame on a big box", () => {
     const size = { width: 1886, height: 900 };
     for (const f of vulnScene.findings) {
       expect(size.width / wideFrame(vulnScene, f, size).width).toBeLessThanOrEqual(WIDE_MAX_SCALE + 1e-6);
+    }
+  });
+});
+
+describe("cityFrame", () => {
+  test("holds the whole city, centred, shaped like the box", () => {
+    for (const size of [
+      { width: 1248, height: 594 },
+      { width: 600, height: 600 },
+    ]) {
+      const vb = cityFrame(size);
+      expect(vb.hidden).toEqual([]);
+      expect(vb.width / vb.height).toBeCloseTo(size.width / size.height, 2);
+      expect(vb.x).toBeLessThanOrEqual(VIEWBOX.x);
+      expect(vb.y).toBeLessThanOrEqual(VIEWBOX.y);
+      expect(vb.x + vb.width).toBeGreaterThanOrEqual(VIEWBOX.x + VIEWBOX.width - 0.01);
+      expect(vb.y + vb.height).toBeGreaterThanOrEqual(VIEWBOX.y + VIEWBOX.height - 0.01);
+      expect(vb.x + vb.width / 2).toBeCloseTo(VIEWBOX.x + VIEWBOX.width / 2, 0);
+      expect(vb.y + vb.height / 2).toBeCloseTo(VIEWBOX.y + VIEWBOX.height / 2, 0);
     }
   });
 });

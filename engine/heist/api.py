@@ -423,8 +423,13 @@ def create_app(
 
     @app.get("/analyses/{aid}/exports")
     async def exports(aid: str) -> Any:
-        """Short-lived signed links to the exported replay (MP4, GIF, poster PNG), never cached."""
-        if not ID_RE.match(aid):
+        """Short-lived signed links to the exported replay (MP4, GIF, poster PNG), never cached.
+
+        Only a finished analysis (live or kept in the store) has a replay to export, so nothing
+        is signed for any other id: it is a 404 without a Storage call.
+        """
+        record = await lookup(aid)  # also refuses ids that fail ID_RE
+        if record is None or record.status != "done":
             return _error(404, NOT_FOUND_COPY)
         links = await asyncio.to_thread(_safely, "export links", kept.export_links, aid)
         return JSONResponse(links or no_export_links(), headers={"Cache-Control": "no-store"})

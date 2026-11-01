@@ -10,7 +10,7 @@ import { ProofRows } from "@/components/panels/ProofRows";
 import { badgeText } from "@/lib/badge";
 import { rulesCoverage, unreadMigrationsCopy, type RulesCoverage } from "@/lib/coverage";
 import { buildTimeline } from "@/lib/timeline";
-import { cameraFrame, pickCorner, wideFrame, type Corner } from "./camera";
+import { cameraFrame, cityFrame, pickCorner, wideFrame, type Corner } from "./camera";
 import { MARKER, makePlan, placeMarkers, replayView, type ReplayView, type Sprite } from "./replayView";
 import { handleStepKeys } from "./StepPlayer";
 import { useReplayClock, type ReplayClock } from "./useReplayClock";
@@ -379,7 +379,7 @@ export function Replay({
   idPrefix?: string;
   /** Size (px) of the wide map box before it is measured (first render and SSR). */
   wideBox?: { width: number; height: number };
-  /** The recording layout: an end card with nothing to click. */
+  /** The recording layout: the whole city in frame, and an end card with nothing to click. */
   record?: boolean;
 }) {
   const timeline = useMemo(() => buildTimeline(finding, scene), [finding, scene]);
@@ -413,12 +413,14 @@ export function Replay({
   const mapRef = useRef<HTMLDivElement>(null);
   const box = useWideBox(mapRef, wideBox);
   const wide = useMemo(() => {
+    // A recording shows the whole city, centred; the page frames the finding.
+    if (record) return cityFrame(box);
     const extra =
       plan.kind === "clean"
         ? plan.markerAt.map((p) => ({ x: p.x - MARKER.w / 2, y: p.y - MARKER.h / 2, w: MARKER.w, h: MARKER.h }))
         : [];
     return wideFrame(scene, finding, box, { extra });
-  }, [scene, finding, plan, box]);
+  }, [scene, finding, plan, box, record]);
   // Wide screens: lay the proof card over the corner that hides the least of the heist.
   const proofCorner = useMemo((): Corner => {
     if (finding?.status !== "proved") return "bottom-left";

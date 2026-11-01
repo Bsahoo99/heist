@@ -14,16 +14,18 @@ export function climaxTime(timeline: TimelineEvent[]): number {
 
 /**
  * Record mode's flags on `document.body.dataset`, for `pnpm export`:
- * `started` on the first replay frame (the export trims everything before
- * it), `climax` once the replay reaches its peak (the poster frame), and
- * `done` once the end card has held for `END_HOLD_MS`.
+ * `started` on the first replay frame, holding that frame's wall-clock time
+ * in epoch ms (the export trims everything before it, timed by the page
+ * itself rather than by when the script noticed), `climax` once the replay
+ * reaches its peak (the poster frame), and `done` once the end card has held
+ * for `END_HOLD_MS`.
  */
 export function useRecordFlags(clock: ReplayClock, ended: boolean, enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     const flags = document.body.dataset;
     const frame = requestAnimationFrame(() => {
-      flags.started = "true";
+      flags.started = String(Math.round(performance.timeOrigin + performance.now()));
     });
     return () => {
       cancelAnimationFrame(frame);

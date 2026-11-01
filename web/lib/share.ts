@@ -6,6 +6,36 @@ import type { Scene } from "./scene.gen";
 
 export const TAGLINE = "See how your vibe-coded app gets robbed, before someone else does.";
 
+/**
+ * How long the share card image may be cached. The fallback frame and the
+ * tagline change once the analysis finishes or its replay is exported, so
+ * they are short-lived; a real poster can be replaced by a re-export, so it
+ * is cached longer but never as immutable.
+ */
+export const CARD_CACHE = {
+  poster: "public, max-age=3600",
+  fallback: "public, max-age=300",
+} as const;
+
+export function cardCacheControl(hasPoster: boolean): string {
+  return hasPoster ? CARD_CACHE.poster : CARD_CACHE.fallback;
+}
+
+/**
+ * `metadataBase` for absolute share URLs: NEXT_PUBLIC_SITE_URL when it is a
+ * valid http(s) URL, else undefined, which leaves Next's own default (the
+ * Vercel production domain on Vercel).
+ */
+export function siteUrl(raw: string | undefined): URL | undefined {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" || url.protocol === "http:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** `https://github.com/owner/name` -> `owner/name`; null for anything else. */
 export function repoName(url: string | null | undefined): string | null {
   const m = url?.match(/^https:\/\/github\.com\/([^/]+\/[^/]+?)\/?$/);

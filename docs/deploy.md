@@ -81,6 +81,7 @@ vercel deploy --prod
 
 Paste the Modal endpoint from step 6 when `vercel env add` asks for the value.
 `HEIST_ENGINE_URL` is optional and only needed if the badge route should reach the engine at a different address.
+`NEXT_PUBLIC_SITE_URL` is optional too: set it to the public origin (for example a custom domain) and share cards use it for their image URLs; unset, Next uses the Vercel production domain.
 If the production domain Vercel gave you differs from the one in step 6, run step 6 again with the real domain in `HEIST_WEB_ORIGINS`.
 
 ## 8. Smoke checks

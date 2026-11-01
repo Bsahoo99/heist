@@ -3,6 +3,7 @@
 import type { PathStep, Scene, SceneFinding, Zone as ZoneId } from "@/lib/scene.gen";
 import { LOCK_ZONES } from "@/lib/timeline";
 import {
+  VIEWBOX,
   VIEW_PAD,
   bbox,
   boxRect,
@@ -224,6 +225,15 @@ export function wideFrame(
   // A later growth may have taken a hidden box in whole after all.
   const still = boxes.filter((b) => hidden.has(b.id) && crossesEdge(vb, b.rect)).map((b) => b.id);
   return { ...vb, hidden: still.sort() };
+}
+
+/**
+ * The recording's frame: the whole city (every zone, slot and label, as the
+ * full map draws it), centred and fitted to the map box `size`, so no plate is
+ * cut and nothing leans to one side.
+ */
+export function cityFrame(size: { width: number; height: number }): WideFrame {
+  return { ...fit(VIEWBOX, size.width / size.height, 0), hidden: [] };
 }
 
 export type Corner = "bottom-left" | "top-right" | "top-left" | "bottom-right";

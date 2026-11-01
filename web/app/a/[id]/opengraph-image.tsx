@@ -4,7 +4,7 @@ import { ImageResponse } from "next/og";
 import { isAnalysisId } from "@/lib/analysisId";
 import { getAnalysis, getExports, serverEngineUrl, type Analysis } from "@/lib/api";
 import type { Scene } from "@/lib/scene.gen";
-import { repoName, shareCard } from "@/lib/share";
+import { cardCacheControl, repoName, shareCard } from "@/lib/share";
 
 export const alt = "A Heist replay of the app's map, with its top finding";
 export const size = { width: 1200, height: 630 };
@@ -97,6 +97,7 @@ export default async function Image({ params }: { params: Promise<{ id: string }
         </div>
       </div>
     ),
-    { ...size },
+    // Not the default year-long immutable cache: the card changes when the run finishes or is exported.
+    { ...size, headers: { "cache-control": cardCacheControl(poster !== null) } },
   );
 }

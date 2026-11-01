@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { cleanScene, vulnScene, withProvedFinding } from "@/tests/helpers/scenes";
 import type { Exports } from "@/lib/api";
 import type { Scene } from "@/lib/scene.gen";
 import { fixtureScene } from "@/tests/helpers/fixtureScene";
 
-const api = vi.hoisted(() => ({ getExports: vi.fn() }));
+const api = vi.hoisted(() => ({ getExports: vi.fn(), openUrl: vi.fn() }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/api")>();
   return { ...real, getExports: api.getExports };
 });
+
+vi.mock("@/lib/openUrl", () => ({ openUrl: api.openUrl }));
 
 const { ResultsView } = await import("./ResultsView");
 
@@ -27,6 +29,7 @@ const flush = () => act(async () => {});
 
 beforeEach(() => {
   api.getExports.mockReset().mockResolvedValue(NONE);
+  api.openUrl.mockReset();
 });
 afterEach(() => {
   cleanup();
@@ -96,7 +99,9 @@ describe("ResultsView", () => {
     const flags = document.body.dataset;
     render(<ResultsView scene={vulnScene} layout="record" />);
     await act(() => vi.advanceTimersByTimeAsync(50));
-    expect(flags.started).toBe("true");
+    // The first frame's own wall-clock time, in epoch ms.
+    expect(flags.started).toMatch(/^\d{13}$/);
+    expect(Math.abs(Number(flags.started) - Date.now())).toBeLessThan(1_000);
     expect(flags.climax).toBeUndefined();
     expect(flags.done).toBeUndefined();
     // Past the end of the replay (at most 30 s): the end card shows, with nothing to click.
@@ -157,6 +162,50 @@ describe("ResultsView", () => {
     await flush();
     expect(screen.queryByRole("link", { name: /Download/ })).toBeNull();
     expect(document.querySelector(".export-links")).toBeNull();
+  });
+
+  test("downloads: a click on young links just follows them", async () => {
+    api.getExports.mockResolvedValue(SIGNED);
+    render(<ResultsView scene={vulnScene} id="abc" autoPlay={false} />);
+    await flush();
+    const mp4 = screen.getByRole("link", { name: "Download MP4" });
+    // jsdom does not navigate; the point is that the default action is left alone.
+    const clicked = fireEvent.click(mp4);
+    expect(clicked).toBe(true);
+    expect(api.getExports).toHaveBeenCalledTimes(1);
+    expect(api.openUrl).not.toHaveBeenCalled();
+  });
+
+  test("downloads: links older than 50 minutes are signed again on click", async () => {
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(start);
+    api.getExports.mockResolvedValueOnce(SIGNED);
+    render(<ResultsView scene={vulnScene} id="abc" autoPlay={false} />);
+    await flush();
+    const fresh = { ...SIGNED, gif: SIGNED.gif!.replace("token=t", "token=new") };
+    api.getExports.mockResolvedValueOnce(fresh);
+    now.mockReturnValue(start + 51 * 60 * 1000);
+    const clicked = fireEvent.click(screen.getByRole("link", { name: "Download GIF" }));
+    expect(clicked).toBe(false); // the stale link is not followed
+    await flush();
+    expect(api.getExports).toHaveBeenCalledTimes(2);
+    expect(api.openUrl).toHaveBeenCalledWith(fresh.gif);
+    expect(screen.getByRole("link", { name: "Download GIF" }).getAttribute("href")).toBe(fresh.gif);
+    now.mockRestore();
+  });
+
+  test("downloads: a failed refresh opens nothing", async () => {
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(start);
+    api.getExports.mockResolvedValueOnce(SIGNED);
+    render(<ResultsView scene={vulnScene} id="abc" autoPlay={false} />);
+    await flush();
+    api.getExports.mockRejectedValueOnce(new Error("down"));
+    now.mockReturnValue(start + 51 * 60 * 1000);
+    fireEvent.click(screen.getByRole("link", { name: "Download MP4" }));
+    await flush();
+    expect(api.openUrl).not.toHaveBeenCalled();
+    now.mockRestore();
   });
 
   test("downloads: pages without an id never ask", async () => {
