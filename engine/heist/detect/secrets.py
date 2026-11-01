@@ -28,6 +28,7 @@ ENV_ACCESS_RE = re.compile(r"\benv\b")
 USE_SERVER_RE = re.compile(r"""\A(?:\s|//[^\n]*\n|/\*.*?\*/)*['"]use server['"]""", re.DOTALL)
 SERVER_ONLY_RE = re.compile(r"""(?:import\s+['"]server-only['"]|from\s+['"]server-only['"])""")
 ROUTE_RE = re.compile(r"(?:^|/)app/(?:.*/)?route\.(?:ts|js|tsx|jsx)$")
+NODE_SHEBANG_RE = re.compile(r"\A#![^\n]*\bnode\b")
 GITLEAKS_TIMEOUT = 60
 
 
@@ -50,15 +51,40 @@ def _read(ws: Workspace, rel: str) -> str | None:
         return None
 
 
+def _is_package_root(ws: Workspace, parts: tuple[str, ...]) -> bool:
+    """The workspace root, or a folder with its own package.json (a package in a monorepo)."""
+    return not parts or "/".join((*parts, "package.json")) in ws.files
+
+
+def _is_node_script(ws: Workspace, rel: str) -> bool:
+    """Server-only Node scripts that never reach a browser bundle.
+
+    A `scripts/` folder at the root of the repo or of a package, a `seed.*` file there, and
+    `supabase/seed*`. A `scripts/` folder deeper in the app (`src/scripts/`) is app code that
+    pages may import, so it stays in scope; so does everything else.
+    """
+    parts = tuple(rel.split("/"))
+    if rel.startswith("supabase/seed"):
+        return True
+    for i, part in enumerate(parts[:-1]):
+        if part == "scripts" and _is_package_root(ws, parts[:i]):
+            return True
+    return parts[-1].startswith("seed.") and _is_package_root(ws, parts[:-1])
+
+
 def _in_frontend_scope(ws: Workspace, rel: str, cache: dict[str, bool]) -> bool:
     if rel in cache:
         return cache[rel]
     ok = True
-    if rel.startswith("supabase/functions/") or ROUTE_RE.search(rel):
+    if rel.startswith("supabase/functions/") or ROUTE_RE.search(rel) or _is_node_script(ws, rel):
         ok = False
     elif Path(rel).suffix.lower() in SOURCE_EXTS:
         text = _read(ws, rel)
-        if text is not None and (USE_SERVER_RE.search(text) or SERVER_ONLY_RE.search(text)):
+        if text is not None and (
+            USE_SERVER_RE.search(text)
+            or SERVER_ONLY_RE.search(text)
+            or NODE_SHEBANG_RE.search(text)  # run with node, never bundled
+        ):
             ok = False
     cache[rel] = ok
     return ok

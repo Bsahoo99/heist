@@ -139,3 +139,59 @@ def test_preview_does_not_reveal_short_values(tmp_copy, vuln_app_path):
     (root / "src/lib/admin.ts").unlink()
     m1 = findings_for(root, find_frontend_secrets)
     assert m1[0].evidence["preview"] == "a..."
+
+
+SEED_LINE = "const admin = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY!)\n"
+
+
+def _m2_files(root) -> list[str]:
+    return [x.refs[0].file for x in findings_for(root, find_frontend_secrets) if x.mistake == 2]
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "scripts/seed.ts",
+        "scripts/db/backfill.mjs",
+        "seed.ts",
+        "supabase/seed.ts",
+        "supabase/seeds/users.js",
+        "packages/admin/scripts/seed.ts",
+    ],
+)
+def test_server_only_node_scripts_are_not_browser_code(tmp_copy, vuln_app_path, rel):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    if rel.startswith("packages/admin/"):
+        (root / "packages/admin").mkdir(parents=True)
+        (root / "packages/admin/package.json").write_text('{"name": "admin"}\n')
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(SEED_LINE)
+    assert _m2_files(root) == []
+
+
+def test_a_node_shebang_file_is_not_browser_code(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    (root / "tools").mkdir()
+    (root / "tools/reset.js").write_text("#!/usr/bin/env node\n" + SEED_LINE)
+    assert _m2_files(root) == []
+
+
+@pytest.mark.parametrize(
+    "rel",
+    ["src/scripts/admin.ts", "src/seed.ts", "src/lib/scripts.ts", "app/scripts/page.tsx"],
+)
+def test_app_code_named_like_scripts_is_still_caught(tmp_copy, vuln_app_path, rel):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(SEED_LINE)
+    assert _m2_files(root) == [rel]
+
+
+def test_a_shebang_without_node_is_still_caught(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    (root / "src/lib/x.ts").write_text("#!/usr/bin/env deno\n" + SEED_LINE)
+    assert _m2_files(root) == ["src/lib/x.ts"]
