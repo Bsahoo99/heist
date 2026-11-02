@@ -174,12 +174,14 @@ def _env_findings(ws: Workspace) -> tuple[list[Finding], set[tuple[str, int]]]:
     findings: list[Finding] = []
     flagged: set[tuple[str, int]] = set()
     for rel in ws.files:
-        if not _is_env_file(rel):
+        if not _is_env_named(rel):
             continue
         text = _read(ws, rel)
         if text is None:
             continue
-        in_scope = _env_in_scope(rel)
+        # Example, sample and template files are never loaded, so only a real admin key in one
+        # counts (a pasted key is still public). Placeholders and demo keys stay silent.
+        in_scope = _is_env_file(rel) and _env_in_scope(rel)
         for line_no, name, value in _parse_env(text):
             if not value:
                 continue

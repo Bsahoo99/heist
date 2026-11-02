@@ -592,3 +592,46 @@ def test_literal_admin_key_in_unreached_source_file_stays_committed(tmp_copy, vu
     assert [(x.mistake, x.title) for x in gl] == [
         (2, "Your Supabase admin key is committed in a public file")
     ]
+
+
+@pytest.mark.parametrize(
+    "rel, line",
+    [
+        (".env.example", f"SUPABASE_SERVICE_ROLE_KEY={REAL_SERVICE}"),
+        (".env.sample", f"VITE_SUPABASE_SERVICE_ROLE_KEY={REAL_SERVICE}"),
+        (".env.template", f"SERVICE_KEY='{REAL_SERVICE}'"),
+        ("apps/web/.env.local.example", f"SUPABASE_KEY={REAL_SERVICE}"),
+    ],
+)
+def test_real_admin_key_in_an_env_example_is_committed(tmp_copy, vuln_app_path, rel, line):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    (root / ".env").write_text("")
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text("# copy to .env\n" + line + "\n")
+    f = findings_for(root, find_frontend_secrets)
+    assert [(x.mistake, x.severity, x.status, x.refs[0].file, x.refs[0].start_line) for x in f] == [
+        (2, "critical", "confirmed", rel, 2)
+    ]
+    assert f[0].title == "Your Supabase admin key is committed in a public file"
+    assert f[0].evidence["location"] == "public_file"
+    assert REAL_SERVICE not in f[0].model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "SUPABASE_SERVICE_ROLE_KEY=your-service-role-key",
+        "SUPABASE_SERVICE_ROLE_KEY=",
+        f"SUPABASE_SERVICE_ROLE_KEY={DEMO_SERVICE}",
+        "SUPABASE_SERVICE_ROLE_KEY=" + REAL_SERVICE.rsplit(".", 1)[0] + ".x",
+        "VITE_OPENAI_API_KEY=sk-abcdef123456",
+    ],
+)
+@pytest.mark.parametrize("name", [".env.example", ".env.sample", ".env.template"])
+def test_placeholders_in_an_env_example_stay_silent(tmp_copy, vuln_app_path, name, line):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    (root / ".env").write_text("")
+    (root / name).write_text(line + "\n")
+    assert findings_for(root, find_frontend_secrets) == []
