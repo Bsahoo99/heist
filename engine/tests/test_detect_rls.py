@@ -321,3 +321,47 @@ def test_open_insert_for_everyone_does_not_hide_an_any_user_read(tmp_copy, vuln_
     )
     assert f["a"].evidence["reason"] == "open_to_any_user"
     assert f["a"].severity == "critical"
+
+
+# --- fix round 4: each write command is checked on its own ------------------------------------
+
+
+def test_a_restrictive_update_leaves_delete_open_under_a_for_all_opener(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        "create table w (id int, title text, owner uuid);\n"
+        "alter table w enable row level security;\n"
+        "create policy p on w for all using (true);\n"
+        "create policy r on w as restrictive for update using (auth.uid() = owner);\n",
+    )
+    w = f["w"]
+    assert w.severity == "critical" and w.evidence["access"] == "read_write"
+
+
+def test_restrictive_update_and_delete_close_the_writes_of_a_for_all_opener(
+    tmp_copy, vuln_app_path
+):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        "create table w (id int, title text, owner uuid);\n"
+        "alter table w enable row level security;\n"
+        "create policy p on w for all using (true);\n"
+        "create policy r on w as restrictive for update using (auth.uid() = owner);\n"
+        "create policy d on w as restrictive for delete using (auth.uid() = owner);\n",
+    )
+    w = f["w"]
+    assert w.severity == "low" and "access" not in w.evidence
+
+
+def test_a_restrictive_for_all_closes_every_command(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        "create table w (id int, title text, owner uuid);\n"
+        "alter table w enable row level security;\n"
+        "create policy p on w for all using (true);\n"
+        "create policy r on w as restrictive for all using (auth.uid() = owner);\n",
+    )
+    assert "w" not in f

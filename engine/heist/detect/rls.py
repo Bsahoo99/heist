@@ -88,11 +88,14 @@ def _closed_by_restrictive(t: Table, opener: Policy, commands: set[str]) -> bool
 
 
 def _first_open(t: Table, commands: set[str], reason: Reason) -> Policy | None:
+    """The first permissive policy that opens one of `commands` to `reason`'s audience. Each
+    command is checked on its own: a `for all` opener stays open for DELETE when only UPDATE is
+    closed by a restrictive policy."""
     for p in t.policies:
         if p.command not in commands or _opening(p) != reason:
             continue
-        closing = commands if p.command == "all" else {p.command, "all"}
-        if not _closed_by_restrictive(t, p, closing):
+        covered = commands - {"all"} if p.command == "all" else {p.command}
+        if any(not _closed_by_restrictive(t, p, {c, "all"}) for c in covered):
             return p
     return None
 
