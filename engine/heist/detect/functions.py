@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from heist.fetch import Workspace
+from heist.graph.imports import alias_map, resolve_imports
 from heist.graph.js import FUNCTIONS_DIR, SOURCE_EXTS, route_id_for
 from heist.graph.supabase import list_edge_functions, read_function_config
 from heist.models import AppGraph, CodeRef, Finding
@@ -37,7 +38,6 @@ PAID_HOST_RE = re.compile(
 )
 SDK_HOSTS = {"OpenAI": "api.openai.com", "Anthropic": "api.anthropic.com"}
 OWNER_FILTER_RE = re.compile(r"\b(user_id|owner_id)\b")
-IMPORT_RE = re.compile(r"""(?:from|import)\s*\(?\s*['"]([^'"]+)['"]""")
 SEMGREP_CHUNK = 500
 MIDDLEWARE_FILES = (
     "middleware.ts",
@@ -45,7 +45,6 @@ MIDDLEWARE_FILES = (
     "src/middleware.ts",
     "src/middleware.js",
 )
-CONFIG_FILES = ("tsconfig.json", "jsconfig.json")
 SEVERITY_MAP: dict[str, Literal["high", "medium", "low"]] = {
     "ERROR": "high",
     "WARNING": "medium",
@@ -86,66 +85,6 @@ def _read(ws: Workspace, rel: str, present: set[str]) -> str | None:
             return fh.read()
     except (UnicodeDecodeError, OSError):
         return None
-
-
-def _alias_map(ws: Workspace, present: set[str]) -> list[tuple[str, list[str]]]:
-    """(prefix, base dirs) pairs for `@/` and tsconfig/jsconfig `compilerOptions.paths`."""
-    aliases: list[tuple[str, list[str]]] = []
-    for name in CONFIG_FILES:
-        text = _read(ws, name, present)
-        if text is None:
-            continue
-        try:
-            data = json.loads(re.sub(r"^\s*//.*$", "", text, flags=re.MULTILINE))
-        except json.JSONDecodeError:
-            continue
-        opts = data.get("compilerOptions") if isinstance(data, dict) else None
-        if not isinstance(opts, dict) or not isinstance(opts.get("paths"), dict):
-            continue
-        base = posixpath.normpath(str(opts.get("baseUrl") or "."))
-        for pattern, targets in opts["paths"].items():
-            if not (
-                isinstance(pattern, str) and pattern.endswith("*") and isinstance(targets, list)
-            ):
-                continue
-            dirs = [
-                posixpath.normpath(posixpath.join(base, t[:-1])) if t.endswith("*") else ""
-                for t in targets
-                if isinstance(t, str)
-            ]
-            aliases.append((pattern[:-1], [d for d in dirs if d]))
-    if not any(prefix == "@/" for prefix, _ in aliases):
-        aliases.append(("@/", ["src", "."]))
-    return aliases
-
-
-def _resolve_imports(
-    rel: str, text: str, present: set[str], aliases: list[tuple[str, list[str]]]
-) -> list[str]:
-    """Workspace files imported by relative path or alias, one level deep."""
-    out: list[str] = []
-    base = posixpath.dirname(rel)
-    for spec in IMPORT_RE.findall(text):
-        roots: list[str] = []
-        if spec.startswith("."):
-            roots.append(posixpath.normpath(posixpath.join(base, spec)))
-        else:
-            for prefix, dirs in aliases:
-                if spec.startswith(prefix):
-                    roots.extend(
-                        posixpath.normpath(posixpath.join(d, spec[len(prefix) :])) for d in dirs
-                    )
-        for joined in roots:
-            cands = (
-                joined,
-                *(joined + e for e in SOURCE_EXTS),
-                *(f"{joined}/index{e}" for e in SOURCE_EXTS),
-            )
-            hit = next((c for c in cands if c in present), None)
-            if hit is not None and hit.endswith(SOURCE_EXTS):
-                out.append(hit)
-                break
-    return out
 
 
 def _collect_targets(ws: Workspace, texts: dict[str, str]) -> list[Target]:
@@ -421,12 +360,12 @@ def find_function_issues(ws: Workspace, g: AppGraph) -> list[Finding]:
             texts[rel] = t
 
     targets = _collect_targets(ws, texts)
-    aliases = _alias_map(ws, present)
+    aliases = alias_map(ws, present)
 
     # one level of imports (relative, `@/`, tsconfig paths), so a shared auth helper counts
     imports: dict[str, list[str]] = {}
     for t in targets:
-        found = _resolve_imports(t.rel, texts[t.rel], present, aliases)
+        found = resolve_imports(t.rel, texts[t.rel], present, aliases)
         imports[t.rel] = found
         for h in found:
             if h not in texts and (ht := _read(ws, h, present)) is not None:

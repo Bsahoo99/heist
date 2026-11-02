@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from heist.detect.browser import SOURCE_EXTS, browser_files, is_server_path
 from heist.fetch import Workspace
 from heist.models import AppGraph, CodeRef, Finding
 
@@ -22,13 +23,9 @@ ENV_EXCLUDED_SUFFIXES = (".example", ".sample", ".template")
 PUBLIC_NAME_RE = re.compile(r"ANON|PUBLISHABLE|SITE_KEY|PUBLIC_KEY", re.IGNORECASE)
 PUBLIC_VALUE_PREFIXES = ("sb_publishable_", "pk_live_", "pk_test_", "phc_", "AIza")
 URL_NAME_LINE_RE = re.compile(r"[A-Za-z0-9_]*_URL\b\s*[:=]", re.IGNORECASE)
-SOURCE_EXTS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"}
 SERVICE_ROLE_RE = re.compile(r"\b[A-Za-z0-9_]*SERVICE_ROLE[A-Za-z0-9_]*\b")
 ENV_ACCESS_RE = re.compile(r"\benv\b")
-USE_SERVER_RE = re.compile(r"""\A(?:\s|//[^\n]*\n|/\*.*?\*/)*['"]use server['"]""", re.DOTALL)
-SERVER_ONLY_RE = re.compile(r"""(?:import\s+['"]server-only['"]|from\s+['"]server-only['"])""")
-ROUTE_RE = re.compile(r"(?:^|/)app/(?:.*/)?route\.(?:ts|js|tsx|jsx)$")
-NODE_SHEBANG_RE = re.compile(r"\A#![^\n]*\bnode\b")
+VITE_ENV = "import.meta.env"
 GITLEAKS_TIMEOUT = 60
 
 
@@ -51,43 +48,9 @@ def _read(ws: Workspace, rel: str) -> str | None:
         return None
 
 
-def _is_package_root(ws: Workspace, parts: tuple[str, ...]) -> bool:
-    """The workspace root, or a folder with its own package.json (a package in a monorepo)."""
-    return not parts or "/".join((*parts, "package.json")) in ws.files
-
-
-def _is_node_script(ws: Workspace, rel: str) -> bool:
-    """Server-only Node scripts that never reach a browser bundle.
-
-    A `scripts/` folder at the root of the repo or of a package, a `seed.*` file there, and
-    `supabase/seed*`. A `scripts/` folder deeper in the app (`src/scripts/`) is app code that
-    pages may import, so it stays in scope; so does everything else.
-    """
-    parts = tuple(rel.split("/"))
-    if rel.startswith("supabase/seed"):
-        return True
-    for i, part in enumerate(parts[:-1]):
-        if part == "scripts" and _is_package_root(ws, parts[:i]):
-            return True
-    return parts[-1].startswith("seed.") and _is_package_root(ws, parts[:-1])
-
-
-def _in_frontend_scope(ws: Workspace, rel: str, cache: dict[str, bool]) -> bool:
-    if rel in cache:
-        return cache[rel]
-    ok = True
-    if rel.startswith("supabase/functions/") or ROUTE_RE.search(rel) or _is_node_script(ws, rel):
-        ok = False
-    elif Path(rel).suffix.lower() in SOURCE_EXTS:
-        text = _read(ws, rel)
-        if text is not None and (
-            USE_SERVER_RE.search(text)
-            or SERVER_ONLY_RE.search(text)
-            or NODE_SHEBANG_RE.search(text)  # run with node, never bundled
-        ):
-            ok = False
-    cache[rel] = ok
-    return ok
+def _env_in_scope(rel: str) -> bool:
+    """Env files a front-end build can read: not Edge Function secrets, backends or tests."""
+    return not rel.startswith("supabase/") and not is_server_path(rel)
 
 
 def decode_jwt_payload(value: str) -> dict[str, Any] | None:
@@ -153,13 +116,11 @@ def _page_nodes(g: AppGraph, rel: str) -> list[str]:
     return [i for i in ids if i in present]
 
 
-def _env_findings(
-    ws: Workspace, scope: dict[str, bool]
-) -> tuple[list[Finding], set[tuple[str, int]]]:
+def _env_findings(ws: Workspace) -> tuple[list[Finding], set[tuple[str, int]]]:
     findings: list[Finding] = []
     flagged: set[tuple[str, int]] = set()
     for rel in ws.files:
-        if not _is_env_file(rel) or not _in_frontend_scope(ws, rel, scope):
+        if not _is_env_file(rel) or not _env_in_scope(rel):
             continue
         text = _read(ws, rel)
         if text is None:
@@ -226,10 +187,17 @@ def _secret_title(name: str) -> str:
     return "A secret key is visible to every visitor"
 
 
-def _service_role_findings(ws: Workspace, g: AppGraph, scope: dict[str, bool]) -> list[Finding]:
+def _reads_env(line: str, stack: str) -> bool:
+    # Vite only exposes import.meta.env to the browser; process.env there is server-only.
+    if stack == "vite_supabase":
+        return VITE_ENV in line
+    return bool(ENV_ACCESS_RE.search(line))
+
+
+def _service_role_findings(ws: Workspace, g: AppGraph, browser: set[str]) -> list[Finding]:
     findings: list[Finding] = []
     for rel in ws.files:
-        if Path(rel).suffix.lower() not in SOURCE_EXTS or not _in_frontend_scope(ws, rel, scope):
+        if rel not in browser:
             continue
         text = _read(ws, rel)
         if text is None or "SERVICE_ROLE" not in text:
@@ -239,7 +207,7 @@ def _service_role_findings(ws: Workspace, g: AppGraph, scope: dict[str, bool]) -
             if stripped.startswith(("//", "*", "/*")):
                 continue
             m = SERVICE_ROLE_RE.search(line)
-            if not m or not ENV_ACCESS_RE.search(line):
+            if not m or not _reads_env(line, g.stack):
                 continue
             findings.append(
                 Finding(
@@ -270,7 +238,7 @@ def _public_name_on_line(ws: Workspace, rel: str, line_no: int) -> bool:
 
 
 def _gitleaks_findings(
-    ws: Workspace, scope: dict[str, bool], flagged: set[tuple[str, int]]
+    ws: Workspace, browser: set[str], flagged: set[tuple[str, int]]
 ) -> list[Finding]:
     exe = shutil.which("gitleaks")
     if exe is None:
@@ -318,7 +286,8 @@ def _gitleaks_findings(
             continue
         if rel not in files or _is_env_named(rel):
             continue
-        if not _in_frontend_scope(ws, rel, scope) or (rel, line_no) in flagged:
+        is_source = Path(rel).suffix.lower() in SOURCE_EXTS
+        if (is_source and rel not in browser) or (rel, line_no) in flagged:
             continue
         if is_public_by_design(secret) or _public_name_on_line(ws, rel, line_no):
             continue
@@ -339,7 +308,11 @@ def _gitleaks_findings(
 
 
 def find_frontend_secrets(ws: Workspace, g: AppGraph) -> list[Finding]:
-    scope: dict[str, bool] = {}
-    env_f, flagged = _env_findings(ws, scope)
-    out = [*env_f, *_service_role_findings(ws, g, scope), *_gitleaks_findings(ws, scope, flagged)]
+    browser = browser_files(ws, g.stack)
+    env_f, flagged = _env_findings(ws)
+    out = [
+        *env_f,
+        *_service_role_findings(ws, g, browser),
+        *_gitleaks_findings(ws, browser, flagged),
+    ]
     return out

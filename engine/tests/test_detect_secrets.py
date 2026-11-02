@@ -142,6 +142,7 @@ def test_preview_does_not_reveal_short_values(tmp_copy, vuln_app_path):
 
 
 SEED_LINE = "const admin = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY!)\n"
+BROWSER_LINE = "const admin = createClient(url, import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY)\n"
 
 
 def _m2_files(root) -> list[str]:
@@ -186,12 +187,130 @@ def test_app_code_named_like_scripts_is_still_caught(tmp_copy, vuln_app_path, re
     root = tmp_copy(vuln_app_path)
     (root / "src/lib/admin.ts").unlink()
     (root / rel).parent.mkdir(parents=True, exist_ok=True)
-    (root / rel).write_text(SEED_LINE)
+    (root / rel).write_text(BROWSER_LINE)
     assert _m2_files(root) == [rel]
 
 
 def test_a_shebang_without_node_is_still_caught(tmp_copy, vuln_app_path):
     root = tmp_copy(vuln_app_path)
     (root / "src/lib/admin.ts").unlink()
-    (root / "src/lib/x.ts").write_text("#!/usr/bin/env deno\n" + SEED_LINE)
+    (root / "src/lib/x.ts").write_text("#!/usr/bin/env deno\n" + BROWSER_LINE)
     assert _m2_files(root) == ["src/lib/x.ts"]
+
+
+# --- browser code is what the front-end bundle reaches ---------------------------------------
+
+INDEX_HTML = '<html><body><script type="module" src="/src/main.tsx"></script></body></html>\n'
+
+
+def _vite_app(tmp_copy, vuln_app_path):
+    """vuln_app with a real entry: index.html -> src/main.tsx -> src/App.tsx -> pages."""
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    (root / "index.html").write_text(INDEX_HTML)
+    (root / "src/main.tsx").write_text("import App from './App'\nimport './index.css'\n")
+    (root / "src/App.tsx").write_text(
+        "import Pets from '@/pages/Pets'\nimport { lazy } from 'react'\n"
+        "const Upload = lazy(() => import('./pages/Upload'))\n"
+    )
+    return root
+
+
+def test_vite_service_role_in_reachable_file_is_caught(tmp_copy, vuln_app_path):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / "src/lib/admin.ts").write_text(BROWSER_LINE)
+    (root / "src/pages/Upload.tsx").write_text("import { admin } from '../lib/admin'\n")
+    assert _m2_files(root) == ["src/lib/admin.ts"]
+
+
+def test_vite_service_role_in_unreachable_file_is_not_browser_code(tmp_copy, vuln_app_path):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / "src/lib/unused.ts").write_text(BROWSER_LINE)
+    assert _m2_files(root) == []
+
+
+def test_vite_process_env_is_server_only(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").write_text(
+        "if (!process.env.SUPABASE_SERVICE_ROLE_KEY) throw new Error('missing')\n"
+    )
+    assert _m2_files(root) == []
+
+
+def test_root_script_imported_from_src_is_browser_code(tmp_copy, vuln_app_path):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / "scripts").mkdir()
+    (root / "scripts/seed.ts").write_text(BROWSER_LINE)
+    (root / "seed.ts").write_text(BROWSER_LINE)
+    (root / "src/pages/Upload.tsx").write_text("import '../../scripts/seed'\nimport '../../seed'\n")
+    assert sorted(_m2_files(root)) == ["scripts/seed.ts", "seed.ts"]
+
+
+def test_root_script_imported_from_src_without_entry_is_browser_code(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").write_text("import '../../scripts/seed'\n")
+    (root / "scripts").mkdir()
+    (root / "scripts/seed.ts").write_text(BROWSER_LINE)
+    assert _m2_files(root) == ["scripts/seed.ts"]
+
+
+def test_import_meta_glob_reaches_its_folder(tmp_copy, vuln_app_path):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / "src/main.tsx").write_text("const pages = import.meta.glob('./routes/**/*.tsx')\n")
+    (root / "src/routes/admin").mkdir(parents=True)
+    (root / "src/routes/admin/Users.tsx").write_text(BROWSER_LINE)
+    assert _m2_files(root) == ["src/routes/admin/Users.tsx"]
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "tests/browser/smoke.spec.mjs",
+        "src/lib/admin.test.ts",
+        "cypress/e2e/flow.cy.ts",
+        "backend/src/config/supabase.js",
+        "backend/supabase/functions/list-users/index.ts",
+        ".supabase/functions/user-management/index.ts",
+        "_backup/pages/api/analyze.ts",
+        "exportProjects.mjs",
+        "_ptest.mjs",
+        "create-tables.js",
+    ],
+)
+def test_server_tests_and_root_scripts_are_not_browser_code(tmp_copy, vuln_app_path, rel):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(BROWSER_LINE)
+    assert _m2_files(root) == []
+
+
+def _next_app(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    shutil.rmtree(root / "src")
+    (root / "package.json").write_text(
+        '{"name": "n", "dependencies": {"@supabase/supabase-js": "^2", "next": "^15"}}\n'
+    )
+    (root / "app/api/admin").mkdir(parents=True)
+    (root / "lib").mkdir()
+    return root
+
+
+NEXT_LINE = "const admin = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY!)\n"
+
+
+def test_next_page_reaching_service_role_is_caught(tmp_copy, vuln_app_path):
+    root = _next_app(tmp_copy, vuln_app_path)
+    (root / "app/page.tsx").write_text("import { admin } from '@/lib/admin'\n")
+    (root / "lib/admin.ts").write_text(NEXT_LINE)
+    assert _m2_files(root) == ["lib/admin.ts"]
+
+
+def test_next_route_handlers_and_unreached_lib_are_not_browser_code(tmp_copy, vuln_app_path):
+    root = _next_app(tmp_copy, vuln_app_path)
+    (root / "app/page.tsx").write_text("export default function P() { return null }\n")
+    (root / "app/api/admin/route.ts").write_text(NEXT_LINE)
+    (root / "lib/admin.ts").write_text(NEXT_LINE)
+    (root / "pages/api").mkdir(parents=True)
+    (root / "pages/api/x.ts").write_text(NEXT_LINE)
+    assert _m2_files(root) == []
