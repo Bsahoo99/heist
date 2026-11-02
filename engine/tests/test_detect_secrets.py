@@ -470,3 +470,79 @@ def test_test_named_folder_nothing_imports_is_not_browser_code(tmp_copy, vuln_ap
     (root / "src/pages/tests").mkdir(parents=True)
     (root / "src/pages/tests/Quiz.tsx").write_text(BROWSER_LINE)
     assert _m2_files(root) == []
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "tests/setup.ts",
+        ".bolt/supabase_discarded_migrations/0001_x.sql",
+        "supabase/functions/admin/index.ts",
+    ],
+)
+def test_admin_key_in_a_skipped_file_is_still_reported(tmp_copy, vuln_app_path, rel):
+    root = tmp_copy(vuln_app_path)
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(f"const key = '{REAL_SERVICE}'\n")
+    gl = _gitleaks(root)
+    assert [(x.mistake, x.severity, x.status, x.refs[0].file) for x in gl] == [
+        (2, "critical", "confirmed", rel)
+    ]
+    assert gl[0].title == "Your Supabase admin key is committed in a public file"
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+def test_admin_key_on_a_line_named_anon_is_still_reported(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / "docs").mkdir()
+    (root / "docs/SETUP.md").write_text(f"SUPABASE_ANON_KEY: {REAL_SERVICE}\n")
+    assert [(x.mistake, x.status) for x in _gitleaks(root)] == [(2, "confirmed")]
+
+
+@pytest.mark.parametrize(
+    "rel, line",
+    [
+        (".env", f"SUPABASE_SERVICE_ROLE_KEY={REAL_SERVICE}"),
+        (".env.local", f"DB_KEY={REAL_SERVICE}"),
+        ("supabase/functions/.env", f"SERVICE_KEY={REAL_SERVICE}"),
+        ("backend/.env", f"SUPABASE_KEY={REAL_SERVICE}"),
+    ],
+)
+def test_admin_key_in_a_committed_env_file_is_reported(tmp_copy, vuln_app_path, rel, line):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    (root / ".env").write_text("")
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(line + "\n")
+    f = findings_for(root, find_frontend_secrets)
+    assert [(x.mistake, x.severity, x.status, x.refs[0].file) for x in f] == [
+        (2, "critical", "confirmed", rel)
+    ]
+    assert f[0].title == "Your Supabase admin key is committed in a public file"
+    assert f[0].evidence["location"] == "public_file"
+    assert REAL_SERVICE not in f[0].model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"SUPABASE_SERVICE_ROLE_KEY={DEMO_SERVICE}",
+        "SUPABASE_SERVICE_ROLE_KEY=your-service-role-key",
+        "OPENAI_API_KEY=sk-abcdef123456",
+    ],
+)
+def test_non_admin_server_env_values_are_not_reported(tmp_copy, vuln_app_path, line):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").unlink()
+    (root / ".env").write_text(line + "\n")
+    assert findings_for(root, find_frontend_secrets) == []
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+def test_placeholder_admin_jwt_in_docs_is_not_an_admin_key(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    placeholder = REAL_SERVICE.rsplit(".", 1)[0] + ".x"
+    (root / "docs").mkdir()
+    (root / "docs/SETUP.md").write_text(f"VITE_SUPABASE_ANON_KEY={placeholder}\n")
+    assert [x for x in _gitleaks(root) if x.mistake == 2] == []

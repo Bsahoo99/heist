@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from heist.detect.browser import browser_files, is_server_path, is_test_file
 from heist.fetch import Workspace
@@ -35,6 +35,7 @@ GITLEAKS_TIMEOUT = 60
 # Evidence "location" for a secret in a committed file the front-end bundle never reaches.
 PUBLIC_FILE = "public_file"
 ADMIN_ROLES = ("service_role", "supabase_admin")
+MIN_SIGNATURE_CHARS = 20
 DISCARDED_RE = re.compile(r"(?:^|/)\.bolt/supabase_discarded_migrations/")
 FUNCTIONS_PREFIX = "supabase/functions/"
 
@@ -94,6 +95,38 @@ def is_public_by_design(value: str) -> bool:
     return payload.get("role") in (None, "anon") or is_demo_key(value)
 
 
+def is_admin_key(value: str) -> bool:
+    """A real-looking Supabase admin JWT (service_role or supabase_admin): not a local demo key,
+    and with a full signature (HS256 is 43 characters), not a doc placeholder like `.x`."""
+    parts = value.split(".")
+    return (
+        _jwt_role(value) in ADMIN_ROLES
+        and not is_demo_key(value)
+        and len(parts) == 3
+        and len(parts[2]) >= MIN_SIGNATURE_CHARS
+    )
+
+
+def _committed_admin(
+    rel: str,
+    line_no: int,
+    ref: CodeRef,
+    source: Literal["heist", "gitleaks"],
+    evidence: dict[str, Any],
+) -> Finding:
+    return Finding(
+        id=f"m2-committed-{_slug(rel)}-{line_no}",
+        mistake=2,
+        severity="critical",
+        status="confirmed",
+        title="Your Supabase admin key is committed in a public file",
+        node_ids=[],
+        refs=[ref],
+        source=source,
+        evidence={**evidence, "location": PUBLIC_FILE},
+    )
+
+
 def is_demo_key(value: str) -> bool:
     payload = decode_jwt_payload(value)
     return payload is not None and payload.get("iss") == SUPABASE_DEMO_ISS
@@ -139,13 +172,22 @@ def _env_findings(ws: Workspace) -> tuple[list[Finding], set[tuple[str, int]]]:
     findings: list[Finding] = []
     flagged: set[tuple[str, int]] = set()
     for rel in ws.files:
-        if not _is_env_file(rel) or not _env_in_scope(rel):
+        if not _is_env_file(rel):
             continue
         text = _read(ws, rel)
         if text is None:
             continue
+        in_scope = _env_in_scope(rel)
         for line_no, name, value in _parse_env(text):
-            if not name.startswith(FRONT_PREFIXES) or not value:
+            if not value:
+                continue
+            if not (in_scope and name.startswith(FRONT_PREFIXES)):
+                # Not a front-end value, but a committed admin key is a leak under any name.
+                if is_admin_key(value):
+                    ref = CodeRef(file=rel, start_line=line_no, end_line=line_no)
+                    ev = {"var": name, "preview": _preview(value)}
+                    findings.append(_committed_admin(rel, line_no, ref, "heist", ev))
+                    flagged.add((rel, line_no))
                 continue
             ref = CodeRef(file=rel, start_line=line_no, end_line=line_no)
             evidence = {"var": name, "preview": _preview(value)}
@@ -307,7 +349,8 @@ def _gitleaks_findings(
             continue
         if rel not in files or _is_env_named(rel) or (rel, line_no) in flagged:
             continue
-        if is_public_by_design(secret) or _public_name_on_line(ws, rel, line_no):
+        admin = is_admin_key(secret)
+        if not admin and (is_public_by_design(secret) or _public_name_on_line(ws, rel, line_no)):
             continue
         ref = CodeRef(file=rel, start_line=line_no, end_line=max(line_no, end))
         evidence: dict[str, Any] = {"rule": rule, "preview": _preview(secret)}
@@ -325,7 +368,8 @@ def _gitleaks_findings(
                     evidence=evidence,
                 )
             )
-        elif not _skip_committed(rel):
+        elif admin or not _skip_committed(rel):
+            # An admin key is a leak wherever it is committed, tests and old migrations included.
             findings.append(_committed_finding(rule, rel, line_no, ref, secret, evidence))
     return findings
 
@@ -346,18 +390,8 @@ def _committed_finding(
     """A hit in a committed file the bundle never reaches. The repo is public, so it is still a
     leak, but only an admin key can be confirmed from the value alone."""
     evidence = {**evidence, "location": PUBLIC_FILE}
-    if _jwt_role(secret) in ADMIN_ROLES:
-        return Finding(
-            id=f"m2-committed-{_slug(rel)}-{line_no}",
-            mistake=2,
-            severity="critical",
-            status="confirmed",
-            title="Your Supabase admin key is committed in a public file",
-            node_ids=[],
-            refs=[ref],
-            source="gitleaks",
-            evidence=evidence,
-        )
+    if is_admin_key(secret):
+        return _committed_admin(rel, line_no, ref, "gitleaks", evidence)
     return Finding(
         id=f"m1-gitleaks-{_slug(rule)}-{_slug(rel)}-{line_no}",
         mistake=1,
