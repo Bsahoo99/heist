@@ -41,8 +41,8 @@ Repos with only findings marked possible, not confirmed: 5 of 50 (10%).
 Repos with no database rules (migrations) in the repo: 9 of 50 (18%).
 For those repos Heist cannot check tables or storage buckets, so mistakes 3 and 4 are unknown, not clean.
 Repos with migration files Heist could not read: 8 of 50 (16%).
-Findings per repo: median 3.5, range 0 to 89.
-Confirmed findings per repo: median 2, range 0 to 78.
+Findings per repo: median 3.5, range 0 to 90.
+Confirmed findings per repo: median 2, range 0 to 79.
 
 ## By mistake
 
@@ -51,7 +51,7 @@ A repo is under Possible, not confirmed only when none of its findings for that 
 
 | Mistake | Confirmed | Possible, not confirmed |
 | --- | --- | --- |
-| 1. Secret keys in browser code or committed public files | 4 of 50 (8%) | 11 of 50 (22%) |
+| 1. Secret keys in browser code or committed public files | 3 of 50 (6%) | 12 of 50 (24%) |
 | 2. Supabase admin (service role) key in browser code or a committed public file | 5 of 50 (10%) | 0 of 50 (0%) |
 | 3. Tables anyone (or any signed-in user) can read or change | 21 of 50 (42%) | 7 of 50 (14%) |
 | 4. Public or unprotected storage buckets | 0 of 50 (0%) | 1 of 50 (2%) |
