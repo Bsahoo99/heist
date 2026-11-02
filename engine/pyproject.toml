@@ -31,6 +31,7 @@ packages = ["heist"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["scripts"]
 asyncio_mode = "auto"
 norecursedirs = ["tests/fixtures"]
 markers = ["docker: needs a running Docker daemon (skipped without one)"]
@@ -42,6 +43,7 @@ target-version = "py312"
 [tool.pyright]
 pythonVersion = "3.12"
 include = ["heist", "tests", "scripts"]
+extraPaths = ["scripts"]
 
 [dependency-groups]
 dev = [
