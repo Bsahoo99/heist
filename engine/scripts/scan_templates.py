@@ -66,7 +66,7 @@ OUTCOME_COPY: dict[str, str] = {
 MISTAKE_NAMES: dict[int, str] = {
     1: "Secret keys in browser code or committed public files",
     2: "Supabase admin (service role) key in browser code or a committed public file",
-    3: "Tables anyone (or any signed-in user) can read",
+    3: "Tables anyone (or any signed-in user) can read or change",
     4: "Public or unprotected storage buckets",
     5: "Server functions or routes with no sign-in check",
     6: "Records changed by an ID from the request without an owner check",

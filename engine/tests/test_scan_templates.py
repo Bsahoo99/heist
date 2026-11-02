@@ -153,7 +153,7 @@ def test_exception_type_keeps_the_class_not_the_message():
 
 
 def test_m3_name_covers_signed_in_users():
-    assert MISTAKE_NAMES[3] == "Tables anyone (or any signed-in user) can read"
+    assert MISTAKE_NAMES[3] == "Tables anyone (or any signed-in user) can read or change"
 
 
 def test_finding_record_has_no_evidence_fields():
