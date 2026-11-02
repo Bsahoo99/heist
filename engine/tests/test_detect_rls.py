@@ -106,7 +106,7 @@ def test_everyone_read_with_only_flag_and_content_columns_is_low(tmp_copy, vuln_
     f = _sql(
         tmp_copy,
         vuln_app_path,
-        "create table settings (id int, email_enabled bool, application_note text,"
+        "create table settings (id int, email_enabled bool, status_message text,"
         " phonetic_transcription text);\nalter table settings enable row level security;\n"
         "create policy x on settings for select using (true);\n",
     )
@@ -120,7 +120,8 @@ def test_everyone_read_with_only_flag_and_content_columns_is_low(tmp_copy, vuln_
         "email", "user_email", "contact_email", "phone", "phone_number", "parent1_phone",
         "address", "address_line1", "notes", "note", "message", "messages", "body",
         "date_of_birth", "dob", "password_hash", "confirmation_token", "user_id",
-        "owner_id", "sender_id", "userEmail", "phoneNumber",
+        "owner_id", "sender_id", "userEmail", "phoneNumber", "medical_notes", "admin_notes",
+        "last_message", "application_note", "analysis_notes", "contact_email_address",
     ],
 )  # fmt: skip
 def test_personal_column_names(name):
@@ -131,7 +132,7 @@ def test_personal_column_names(name):
     "name",
     [
         "email_enabled", "email_autoconfirm", "email_confirmed_at", "phone_verified",
-        "error_message", "last_message_at", "application_note", "analysis_notes",
+        "error_message", "last_message_at", "status_message", "message_count",
         "phonetic_transcription", "title", "notebook", "addressed", "id", "created_at",
     ],
 )  # fmt: skip
