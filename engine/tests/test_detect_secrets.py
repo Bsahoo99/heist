@@ -546,3 +546,16 @@ def test_placeholder_admin_jwt_in_docs_is_not_an_admin_key(tmp_copy, vuln_app_pa
     (root / "docs").mkdir()
     (root / "docs/SETUP.md").write_text(f"VITE_SUPABASE_ANON_KEY={placeholder}\n")
     assert [x for x in _gitleaks(root) if x.mistake == 2] == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "const env = import.meta.env;\nexport const admin = createClient(url, env.VITE_SUPABASE_SERVICE_ROLE_KEY)\n",
+        "const { VITE_SUPABASE_SERVICE_ROLE_KEY: k } = import.meta.env\nconst x = process.env.SUPABASE_SERVICE_ROLE_KEY ?? import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY\n",
+    ],
+)
+def test_vite_env_through_an_alias_is_caught(tmp_copy, vuln_app_path, text):
+    root = tmp_copy(vuln_app_path)
+    (root / "src/lib/admin.ts").write_text(text)
+    assert _m2_files(root) == ["src/lib/admin.ts"]

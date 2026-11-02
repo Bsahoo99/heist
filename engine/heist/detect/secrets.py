@@ -30,7 +30,7 @@ PUBLIC_VALUE_PREFIXES = ("sb_publishable_", "pk_live_", "pk_test_", "phc_", "AIz
 URL_NAME_LINE_RE = re.compile(r"[A-Za-z0-9_]*_URL\b\s*[:=]", re.IGNORECASE)
 SERVICE_ROLE_RE = re.compile(r"\b[A-Za-z0-9_]*SERVICE_ROLE[A-Za-z0-9_]*\b")
 ENV_ACCESS_RE = re.compile(r"\benv\b")
-VITE_ENV = "import.meta.env"
+PROCESS_ENV_RE = re.compile(r"\bprocess\.env\b")
 GITLEAKS_TIMEOUT = 60
 # Evidence "location" for a secret in a committed file the front-end bundle never reaches.
 PUBLIC_FILE = "public_file"
@@ -251,10 +251,13 @@ def _secret_title(name: str) -> str:
 
 
 def _reads_env(line: str, stack: str) -> bool:
-    # Vite only exposes import.meta.env to the browser; process.env there is server-only.
+    if not ENV_ACCESS_RE.search(line):
+        return False
+    # Vite never exposes process.env to the browser, so a line whose only env access is
+    # process.env is server-only. `import.meta.env` or a local alias (`env.X`) still counts.
     if stack == "vite_supabase":
-        return VITE_ENV in line
-    return bool(ENV_ACCESS_RE.search(line))
+        return bool(ENV_ACCESS_RE.search(PROCESS_ENV_RE.sub("", line)))
+    return True
 
 
 def _service_role_findings(ws: Workspace, g: AppGraph, browser: set[str]) -> list[Finding]:
