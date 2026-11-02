@@ -306,7 +306,7 @@ def _public_name_on_line(ws: Workspace, rel: str, line_no: int) -> bool:
 
 
 def _gitleaks_findings(
-    ws: Workspace, browser: set[str], flagged: set[tuple[str, int]]
+    ws: Workspace, g: AppGraph, browser: set[str], flagged: set[tuple[str, int]]
 ) -> list[Finding]:
     exe = shutil.which("gitleaks")
     if exe is None:
@@ -359,7 +359,22 @@ def _gitleaks_findings(
             continue
         ref = CodeRef(file=rel, start_line=line_no, end_line=max(line_no, end))
         evidence: dict[str, Any] = {"rule": rule, "preview": _preview(secret)}
-        if rel in browser:
+        if rel in browser and admin:
+            # The master key itself ships to every visitor: mistake 2, like the env-var form.
+            findings.append(
+                Finding(
+                    id=f"m2-gitleaks-{_slug(rel)}-{line_no}",
+                    mistake=2,
+                    severity="critical",
+                    status="confirmed",
+                    title="Your Supabase admin key is in the browser code",
+                    node_ids=_page_nodes(g, rel),
+                    refs=[ref],
+                    source="gitleaks",
+                    evidence=evidence,
+                )
+            )
+        elif rel in browser:
             findings.append(
                 Finding(
                     id=f"m1-gitleaks-{_slug(rule)}-{_slug(rel)}-{line_no}",
@@ -416,6 +431,6 @@ def find_frontend_secrets(ws: Workspace, g: AppGraph) -> list[Finding]:
     out = [
         *env_f,
         *_service_role_findings(ws, g, browser),
-        *_gitleaks_findings(ws, browser, flagged),
+        *_gitleaks_findings(ws, g, browser, flagged),
     ]
     return out

@@ -562,3 +562,33 @@ def test_vite_env_through_an_alias_is_caught(tmp_copy, vuln_app_path, text):
     root = tmp_copy(vuln_app_path)
     (root / "src/lib/admin.ts").write_text(text)
     assert _m2_files(root) == ["src/lib/admin.ts"]
+
+
+# --- fix round 4 ---------------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+@pytest.mark.parametrize("rel", ["src/pages/tests/Quiz.tsx", "src/lib/supabaseAdmin.ts"])
+def test_literal_admin_key_in_reached_browser_code_is_mistake_2(tmp_copy, vuln_app_path, rel):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(f"export const key = '{REAL_SERVICE}'\n")
+    spec = "../" + rel.removeprefix("src/").rsplit(".", 1)[0]
+    (root / "src/pages/Upload.tsx").write_text(f"import '{spec}'\n")
+    gl = _gitleaks(root)
+    assert [(x.mistake, x.severity, x.status, x.refs[0].file) for x in gl] == [
+        (2, "critical", "confirmed", rel)
+    ]
+    assert gl[0].title == "Your Supabase admin key is in the browser code"
+    assert "location" not in gl[0].evidence
+    assert REAL_SERVICE not in gl[0].model_dump_json()
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+def test_literal_admin_key_in_unreached_source_file_stays_committed(tmp_copy, vuln_app_path):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / "src/lib/supabaseAdmin.ts").write_text(f"export const key = '{REAL_SERVICE}'\n")
+    gl = _gitleaks(root)
+    assert [(x.mistake, x.title) for x in gl] == [
+        (2, "Your Supabase admin key is committed in a public file")
+    ]
