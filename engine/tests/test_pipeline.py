@@ -575,3 +575,25 @@ def test_prove_skips_write_only_openings(tmp_copy, vuln_app_path):
     g = next(f for f in s.findings if f.id == "m3-guestbook")
     assert g.severity == "critical" and g.status == "confirmed"
     assert seen == [["adoption_requests", "messages"]]
+
+
+def test_prove_runs_for_a_read_open_to_everyone_with_a_write_open_to_any_user(
+    tmp_copy, vuln_app_path
+):
+    root = tmp_copy(vuln_app_path)
+    (root / "supabase/migrations/0004_w.sql").write_text(
+        "create table public.guestbook (id int, title text);\n"
+        "alter table public.guestbook enable row level security;\n"
+        "create policy r on public.guestbook for select using (true);\n"
+        "create policy u on public.guestbook for update to authenticated using (true);\n"
+    )
+    seen: list[list[str]] = []
+
+    def prove(db: DbSchema, ws: Workspace, tables: list[str]) -> dict[str, list[ProofRow]]:
+        seen.append(tables)
+        return {}
+
+    s = run_analysis(str(root), lambda e: None, None, prove)
+    g = next(f for f in s.findings if f.id == "m3-guestbook")
+    assert g.severity == "critical" and g.status == "confirmed"
+    assert [sorted(x) for x in seen] == [["adoption_requests", "guestbook", "messages"]]

@@ -365,3 +365,64 @@ def test_a_restrictive_for_all_closes_every_command(tmp_copy, vuln_app_path):
         "create policy r on w as restrictive for all using (auth.uid() = owner);\n",
     )
     assert "w" not in f
+
+
+# --- fix round 4: reads and writes are judged on their own, across both audiences ---------------
+
+
+@pytest.mark.parametrize(
+    "read, write, read_reason, write_reason, title",
+    [
+        (
+            "for select using (true)",
+            "for update to authenticated using (true)",
+            "open_to_everyone",
+            "open_to_any_user",
+            "Anyone can read and any signed-in user can change every row in w",
+        ),
+        (
+            "for select using (true)",
+            "for delete using (auth.uid() is not null)",
+            "open_to_everyone",
+            "open_to_any_user",
+            "Anyone can read and any signed-in user can change every row in w",
+        ),
+        (
+            "for select to authenticated using (true)",
+            "for update using (true)",
+            "open_to_any_user",
+            "open_to_everyone",
+            "Any signed-in user can read and anyone can change every row in w",
+        ),
+    ],
+)
+def test_read_and_write_open_to_different_audiences_is_critical(
+    tmp_copy, vuln_app_path, read, write, read_reason, write_reason, title
+):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        _T.format(t="w") + f"create policy r on w {read};\ncreate policy u on w {write};\n",
+    )
+    w = f["w"]
+    assert w.severity == "critical" and w.status == "confirmed"
+    assert w.evidence["access"] == "read_write"
+    assert w.evidence["reason"] == write_reason
+    assert w.evidence["read_reason"] == read_reason
+    assert w.title == title
+    # The write policy is the lock the story points at; the read policy is cited too.
+    assert w.node_ids == ["table:w", "policy:w:u", "policy:w:r"]
+    assert [r.file for r in w.refs] == ["supabase/migrations/0004_x.sql"] * 2
+
+
+def test_same_audience_read_and_write_keeps_one_reason(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        _T.format(t="w")
+        + "create policy r on w for select to authenticated using (true);\n"
+        + "create policy u on w for update to authenticated using (true);\n",
+    )
+    w = f["w"]
+    assert w.evidence["reason"] == "open_to_any_user" and "read_reason" not in w.evidence
+    assert w.title == "Any signed-in user can read and change every row in w"

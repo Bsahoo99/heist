@@ -781,3 +781,23 @@ def test_m3_insert_only_template_says_rows_can_be_added_not_read(vuln_findings, 
     )
     assert all("every row" not in s.data for s in t.attack_path)
     assert any("cannot read them" in s.why for s in t.attack_path)
+
+
+def test_m3_template_names_both_audiences_when_they_differ(vuln_findings, graph, ws):
+    base = next(f for f in vuln_findings if f.id == "m3-adoption_requests")
+    ev = {
+        **base.evidence,
+        "access": "read_write",
+        "reason": "open_to_everyone",
+        "read_reason": "open_to_any_user",
+    }
+    f = base.model_copy(update={"evidence": ev})
+    t = fallback_trace(f, graph, ws)
+    assert validate_trace(t, f, graph, ws)[1] == []
+    assert (
+        "The read rule on adoption_requests lets any signed-in user read every row, and the "
+        "write rule lets anyone change every row." in t.fix.explanation
+    )
+    policy_steps = [s for s in t.attack_path if s.code.startswith("Policy ")]
+    assert policy_steps and policy_steps[0].code.endswith("lets every visitor change every row.")
+    assert "—" not in t.model_dump_json()

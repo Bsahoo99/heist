@@ -100,6 +100,15 @@ def _first_open(t: Table, commands: set[str], reason: Reason) -> Policy | None:
     return None
 
 
+def _open(t: Table, commands: set[str]) -> tuple[Reason, Policy] | None:
+    """The widest audience (everyone, then any signed-in user) with an open policy."""
+    for reason in REASONS:
+        p = _first_open(t, commands, reason)
+        if p is not None:
+            return reason, p
+    return None
+
+
 def is_personal_column(name: str) -> bool:
     if name in OWNER_COLUMNS:
         return True
@@ -119,6 +128,10 @@ def _personal_columns(t: Table) -> list[str]:
     return [c.name for c in t.columns if is_personal_column(c.name)]
 
 
+def _who(reason: str) -> str:
+    return "Any signed-in user" if reason == "open_to_any_user" else "Anyone"
+
+
 def _finding(
     t: Table,
     reason: str,
@@ -128,14 +141,20 @@ def _finding(
     reads: bool = True,
     writes: bool = True,
     insert_only: bool = False,
+    read: tuple[Reason, Policy] | None = None,
 ) -> Finding:
     """Open updates, deletes and reads of personal data are critical. A SELECT-only read of a
     table with no personal columns is low ("check this is intended", plan Review Focus 2), and so
-    is an INSERT-only opening: anyone can add rows (spam, say) but cannot read or change any."""
+    is an INSERT-only opening: anyone can add rows (spam, say) but cannot read or change any.
+
+    `read` is set when the read is open to a different audience than the write: `reason` and
+    `policy` then describe the write, and the read is cited second."""
     name = t.name
-    who = "Any signed-in user" if reason == "open_to_any_user" else "Anyone"
+    who = _who(reason)
     critical = not insert_only and (reason == "rls_off" or writes or bool(personal))
-    if insert_only:
+    if read is not None:
+        title = f"{_who(read[0])} can read and {_who(reason).lower()} can change every row in {name}"
+    elif insert_only:
         title = f"{who} can add rows to {name} (check this is intended)"
     elif reason == "rls_off":
         title = f"Anyone can read every row in {name}"
@@ -156,9 +175,12 @@ def _finding(
     if policy is None:
         refs, nodes = [t.ref], [f"table:{name}"]
     else:
-        refs = [policy.ref]
-        nodes = [f"table:{name}", f"policy:{policy.table}:{policy.name}"]
+        cited = [policy] if read is None else [policy, read[1]]
+        refs = [c.ref for c in cited]
+        nodes = [f"table:{name}", *(f"policy:{c.table}:{c.name}" for c in cited)]
     evidence: dict[str, object] = {"table": name, "reason": reason, "personal_columns": personal}
+    if read is not None:
+        evidence["read_reason"] = read[0]
     if insert_only:
         evidence["access"] = "insert"
     elif reason != "rls_off" and writes:
@@ -179,22 +201,22 @@ def _finding(
 
 
 def _table_openings(t: Table, personal: list[str]) -> list[Finding]:
-    """At most one finding per table. Reads and row changes come first (everyone beats any
-    signed-in user); an INSERT-only opening counts only when nothing else is open."""
-    for reason in REASONS:
-        read = _first_open(t, READ_COMMANDS, reason)
-        write = _first_open(t, WRITE_COMMANDS, reason)
-        if read is not None or write is not None:
-            opener = read or write
-            return [
-                _finding(
-                    t, reason, opener, personal, reads=read is not None, writes=write is not None
-                )
-            ]
-    for reason in REASONS:
-        insert = _first_open(t, INSERT_COMMANDS, reason)
-        if insert is not None:
-            return [_finding(t, reason, insert, personal, insert_only=True)]
+    """At most one finding per table. The open read and the open row change are found on their
+    own, each the widest audience first (everyone, then any signed-in user), and judged together.
+    An INSERT-only opening counts only when nothing else is open."""
+    read = _open(t, READ_COMMANDS)
+    write = _open(t, WRITE_COMMANDS)
+    if read is not None and write is not None and read[0] != write[0]:
+        return [_finding(t, write[0], write[1], personal, read=read)]
+    opening = read or write
+    if opening is not None:
+        reason, opener = opening
+        return [
+            _finding(t, reason, opener, personal, reads=read is not None, writes=write is not None)
+        ]
+    insert = _open(t, INSERT_COMMANDS)
+    if insert is not None:
+        return [_finding(t, insert[0], insert[1], personal, insert_only=True)]
     return []
 
 

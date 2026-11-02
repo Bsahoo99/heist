@@ -698,6 +698,9 @@ def _m3(ctx: _Ctx) -> TraceOut:
     # What the broken lock allows: read, change (update or delete), or both.
     verb = {"write": "change", "read_write": "read and change"}.get(access, "read")
     kind = "read" if access == "read" else "access"
+    # Set when the read is open to a different audience than the write; `reason` is the write's.
+    read_reason = ctx.ev("read_reason", "")
+    policy_verb = "change" if read_reason else verb
     policy = next((n for i in f.node_ids if (n := ctx.node(i)) and n.kind == "policy"), None)
     ref = f.refs[0] if f.refs else t_node.ref
     owner = _owner_column(ctx, table)
@@ -776,7 +779,7 @@ def _m3(ctx: _Ctx) -> TraceOut:
                 if reason == "open_to_any_user"
                 else "Here is the broken lock: it opens for anyone at all.",
                 f"A {'read' if access == 'read' else 'write'} policy must compare the row's owner with the user. This one does not.",
-                f"Policy {policy.name} on {table} lets every {'signed-in user' if reason == 'open_to_any_user' else 'visitor'} {verb} every row.",
+                f"Policy {policy.name} on {table} lets every {'signed-in user' if reason == 'open_to_any_user' else 'visitor'} {policy_verb} every row.",
             )
         )
         attack.append(
@@ -834,6 +837,12 @@ def _m3(ctx: _Ctx) -> TraceOut:
         "rls_off": f"Row level security is off for {table}, so anyone with the public anon key can read every row.",
         "open_to_any_user": f"The {kind} rule on {table} only checks that someone is signed in, so any account can {verb} every row.",
     }.get(reason, f"The {kind} rule on {table} lets anyone {verb} every row.")
+    if read_reason:
+        who = {"open_to_any_user": "any signed-in user"}
+        what = (
+            f"The read rule on {table} lets {who.get(read_reason, 'anyone')} read every row, and "
+            f"the write rule lets {who.get(reason, 'anyone')} change every row."
+        )
     how = (
         f"Add a new migration that turns the lock on and lets each user {verb} only rows where {owner} is their own id."
         if owner
