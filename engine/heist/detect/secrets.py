@@ -21,6 +21,11 @@ FRONT_PREFIXES = ("VITE_", "NEXT_PUBLIC_")
 SECRET_NAME_RE = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|PASSWD", re.IGNORECASE)
 ENV_EXCLUDED_SUFFIXES = (".example", ".sample", ".template")
 PUBLIC_NAME_RE = re.compile(r"ANON|PUBLISHABLE|SITE_KEY|PUBLIC_KEY", re.IGNORECASE)
+# Wider, for detection only: names that say the value is meant for the browser. Redaction keeps
+# the narrow list above, so an oddly named real secret is still hidden from the model and page.
+PUBLIC_DETECT_NAME_RE = re.compile(r"ANON|PUBLISHABLE|SITE_?KEY|PUBLIC_(?:API_)?KEY", re.IGNORECASE)
+# Issuer of the well-known keys `supabase start` prints for local development.
+SUPABASE_DEMO_ISS = "supabase-demo"
 PUBLIC_VALUE_PREFIXES = ("sb_publishable_", "pk_live_", "pk_test_", "phc_", "AIza")
 URL_NAME_LINE_RE = re.compile(r"[A-Za-z0-9_]*_URL\b\s*[:=]", re.IGNORECASE)
 SERVICE_ROLE_RE = re.compile(r"\b[A-Za-z0-9_]*SERVICE_ROLE[A-Za-z0-9_]*\b")
@@ -77,7 +82,16 @@ def is_public_by_design(value: str) -> bool:
         return True
     if re.match(r"^https?://\S+$", value, re.IGNORECASE):
         return True
-    return _jwt_role(value) == "anon"
+    payload = decode_jwt_payload(value)
+    if payload is None:
+        return False
+    # Anon keys, local demo keys, and JWTs with no role (signed storage URLs and the like).
+    return payload.get("role") in (None, "anon") or is_demo_key(value)
+
+
+def is_demo_key(value: str) -> bool:
+    payload = decode_jwt_payload(value)
+    return payload is not None and payload.get("iss") == SUPABASE_DEMO_ISS
 
 
 def _preview(value: str) -> str:
@@ -130,6 +144,8 @@ def _env_findings(ws: Workspace) -> tuple[list[Finding], set[tuple[str, int]]]:
                 continue
             ref = CodeRef(file=rel, start_line=line_no, end_line=line_no)
             evidence = {"var": name, "preview": _preview(value)}
+            if is_demo_key(value):
+                continue
             if "SERVICE_ROLE" in name.upper() or _jwt_role(value) == "service_role":
                 findings.append(
                     Finding(
@@ -149,7 +165,7 @@ def _env_findings(ws: Workspace) -> tuple[list[Finding], set[tuple[str, int]]]:
             if (
                 is_public_by_design(value)
                 or name.upper().endswith("_URL")
-                or PUBLIC_NAME_RE.search(name)
+                or PUBLIC_DETECT_NAME_RE.search(name)
             ):
                 continue
             if not SECRET_NAME_RE.search(name):
@@ -234,7 +250,7 @@ def _public_name_on_line(ws: Workspace, rel: str, line_no: int) -> bool:
     if not 1 <= line_no <= len(lines):
         return False
     line = lines[line_no - 1]
-    return bool(PUBLIC_NAME_RE.search(line) or URL_NAME_LINE_RE.search(line))
+    return bool(PUBLIC_DETECT_NAME_RE.search(line) or URL_NAME_LINE_RE.search(line))
 
 
 def _gitleaks_findings(

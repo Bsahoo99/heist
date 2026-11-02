@@ -1,8 +1,10 @@
+import base64
+import json
 import shutil
 
 import pytest
 
-from heist.detect.secrets import find_frontend_secrets
+from heist.detect.secrets import PUBLIC_NAME_RE, find_frontend_secrets, is_public_by_design
 from tests.helpers import findings_for
 
 HAS_GITLEAKS = shutil.which("gitleaks") is not None
@@ -314,3 +316,62 @@ def test_next_route_handlers_and_unreached_lib_are_not_browser_code(tmp_copy, vu
     (root / "pages/api").mkdir(parents=True)
     (root / "pages/api/x.ts").write_text(NEXT_LINE)
     assert _m2_files(root) == []
+
+
+# --- public-by-design values ------------------------------------------------------------------
+
+
+def _jwt(payload: dict[str, object]) -> str:
+    def seg(d: dict[str, object]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+
+    return f"{seg({'alg': 'HS256', 'typ': 'JWT'})}.{seg(payload)}.c2lnbmF0dXJlLW5vdC1yZWFs"
+
+
+ROLELESS_JWT = _jwt({"url": "storage/v1/object/sign/audio/a.mp3", "iat": 1, "exp": 2})
+DEMO_ANON = _jwt({"iss": "supabase-demo", "role": "anon", "exp": 1983812996})
+DEMO_SERVICE = _jwt({"iss": "supabase-demo", "role": "service_role", "exp": 1983812996})
+REAL_SERVICE = _jwt({"iss": "supabase", "ref": "abcdefghijklmnop", "role": "service_role"})
+
+
+@pytest.mark.parametrize(
+    "value, public",
+    [
+        (ROLELESS_JWT, True),
+        (DEMO_ANON, True),
+        (DEMO_SERVICE, True),
+        (REAL_SERVICE, False),
+        (_jwt({"role": "authenticated", "sub": "u"}), False),
+    ],
+)
+def test_public_by_design_jwts(value, public):
+    assert is_public_by_design(value) is public
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "VITE_HCAPTCHA_SITEKEY=10000000-ffff-ffff-ffff-000000000001",
+        "VITE_COPILOTKIT_PUBLIC_API_KEY=ck_pub_abcdef1234567890",
+        f"VITE_SUPABASE_SERVICE_ROLE_KEY={DEMO_SERVICE}",
+        f"VITE_SOME_TOKEN={ROLELESS_JWT}",
+    ],
+)
+def test_more_public_browser_values_not_flagged(tmp_copy, vuln_app_path, line):
+    root = tmp_copy(vuln_app_path)
+    (root / ".env").write_text(line + "\n")
+    (root / "src/lib/admin.ts").unlink()
+    assert findings_for(root, find_frontend_secrets) == []
+
+
+def test_real_service_role_jwt_value_still_flagged(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / ".env").write_text(f"VITE_SUPABASE_KEY={REAL_SERVICE}\n")
+    (root / "src/lib/admin.ts").unlink()
+    f = findings_for(root, find_frontend_secrets)
+    assert [(x.mistake, x.severity, x.status) for x in f] == [(2, "critical", "confirmed")]
+
+
+def test_redaction_keeps_the_narrow_public_names():
+    assert PUBLIC_NAME_RE.search("VITE_HCAPTCHA_SITEKEY") is None
+    assert PUBLIC_NAME_RE.search("VITE_COPILOTKIT_PUBLIC_API_KEY") is None
