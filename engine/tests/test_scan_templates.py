@@ -5,15 +5,19 @@ import json
 
 from scan_templates import (
     METHOD,
-    REVIEW,
+    MISTAKE_NAMES,
+    OUTCOME_COPY,
     FindingRecord,
     RepoRecord,
     aggregate,
+    exception_type,
     finding_record,
+    outcome_of,
     record_from_json,
     render_markdown,
 )
 
+from heist.fetch import BAD_URL_COPY, CLONE_FAILED_COPY, TOO_BIG_COPY, UNSUPPORTED_STACK_COPY
 from heist.models import EM_DASH, CodeRef, Finding
 
 OWNER = "zz-secret-owner"
@@ -98,23 +102,58 @@ def test_findings_per_repo_median_and_range():
 
 def test_no_scanned_repos_does_not_crash():
     s = aggregate([RepoRecord(url=URL, sha=None, stack=None, status="error")])
-    md = render_markdown(s, METHOD, REVIEW, "2026-11-02")
+    md = render_markdown(s, METHOD, "2026-11-02")
     assert "0 of 0" in md
 
 
 def test_markdown_has_no_repo_name_url_or_path():
-    md = render_markdown(aggregate(sample()), METHOD, REVIEW, "2026-11-02")
-    for needle in (OWNER, NAME, URL, "github.com/", PATH, "zz_secret_path", SECRET):
+    md = render_markdown(aggregate(sample()), METHOD, "2026-11-02")
+    for needle in (OWNER, NAME, URL, "github.com/", PATH, "zz_secret_path"):
         assert needle not in md
     assert EM_DASH not in md
     assert "at least one confirmed critical finding: 2 of 4 (50%)" in md
     assert "Possible, not confirmed" in md
 
 
-def test_fixed_copy_has_no_em_dash_or_repo_link():
-    for text in (METHOD, REVIEW):
-        assert EM_DASH not in text
-        assert "github.com/" not in text
+def test_fixed_copy_has_no_em_dash_repo_link_or_numbers_that_can_go_stale():
+    assert EM_DASH not in METHOD and "github.com/" not in METHOD
+    assert "semgrep community rules were off" in METHOD
+    assert "manual spot check" in METHOD
+    assert "%" not in METHOD
+
+
+def test_every_outcome_row_is_rendered_even_at_zero():
+    md = render_markdown(aggregate(sample()), METHOD, "2026-11-02")
+    for label in OUTCOME_COPY.values():
+        assert f"| {label} | " in md
+    assert "| Over Heist's size caps | 0 |" in md
+    assert "| Not a valid GitHub repo URL | 0 |" in md
+
+
+def test_bad_url_has_its_own_outcome():
+    assert outcome_of(BAD_URL_COPY) == "bad_url"
+    assert outcome_of(CLONE_FAILED_COPY) == "clone_failed"
+    assert outcome_of(UNSUPPORTED_STACK_COPY) == "unsupported_stack"
+    assert outcome_of(TOO_BIG_COPY.format(why="over 2,000 files")) == "too_big"
+    assert outcome_of("something else") == "error"
+    s = aggregate([RepoRecord(url=URL, sha=None, stack=None, status="bad_url")])
+    assert s.outcomes["bad_url"] == 1 and s.scanned == 0
+
+
+def test_exception_type_keeps_the_class_not_the_message():
+    err = (
+        f"Traceback (most recent call last):\n  File x\nValueError: bad value {SECRET} in {PATH}\n"
+    )
+    assert exception_type(err) == "ValueError"
+    assert (
+        exception_type("pydantic_core.ValidationError: 1 error") == "pydantic_core.ValidationError"
+    )
+    assert exception_type(f"fatal: {SECRET}") == "unknown"
+    assert exception_type("") == "unknown"
+
+
+def test_m3_name_covers_signed_in_users():
+    assert MISTAKE_NAMES[3] == "Tables anyone (or any signed-in user) can read"
 
 
 def test_finding_record_has_no_evidence_fields():

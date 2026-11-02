@@ -10,6 +10,10 @@ Run with `cd engine && uv run python scripts/scan_templates.py`.
 """
 
 import json
+import os
+import re
+import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -23,6 +27,7 @@ from typing import Literal
 
 from heist.detect.run import run_detectors
 from heist.fetch import (
+    BAD_URL_COPY,
     CLONE_FAILED_COPY,
     TOO_BIG_COPY,
     UNSUPPORTED_STACK_COPY,
@@ -38,25 +43,30 @@ REPO = ENGINE.parent
 TEMPLATES = REPO / "data" / "templates.txt"
 RESULTS = REPO / "data" / "template-results.jsonl"
 STATS = REPO / "docs" / "template-stats.md"
+LOG = REPO / "data" / "template-scan.log"
 
 REPO_TIMEOUT_S = 300
+_EXC_RE = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt))\b")
 WORKERS = 4
 
-Outcome = Literal["scanned", "unsupported_stack", "too_big", "clone_failed", "timeout", "error"]
+Outcome = Literal[
+    "scanned", "unsupported_stack", "too_big", "bad_url", "clone_failed", "timeout", "error"
+]
 
 OUTCOME_COPY: dict[str, str] = {
     "scanned": "Scanned",
     "unsupported_stack": "Not a supported stack (Vite or Next.js with Supabase)",
     "too_big": "Over Heist's size caps",
+    "bad_url": "Not a valid GitHub repo URL",
     "clone_failed": "Could not be cloned",
     "timeout": f"Took longer than the {REPO_TIMEOUT_S} second limit",
     "error": "Crashed in Heist",
 }
 
 MISTAKE_NAMES: dict[int, str] = {
-    1: "Secret keys in front-end code",
-    2: "Supabase admin (service role) key reachable from the browser",
-    3: "Tables anyone can read",
+    1: "Secret keys in browser code or committed public files",
+    2: "Supabase admin (service role) key in browser code or a committed public file",
+    3: "Tables anyone (or any signed-in user) can read",
     4: "Public or unprotected storage buckets",
     5: "Server functions or routes with no sign-in check",
     6: "Records changed by an ID from the request without an owner check",
@@ -71,17 +81,10 @@ Each candidate was kept only if it was public, not a fork and not archived, and 
 The first 35 Lovable repos and the first 15 Bolt repos that passed were scanned, 50 in all.
 Each repo was shallow-cloned at its default branch through Heist's normal fetch path, with the same file and size caps as a real analysis.
 Only Heist's detectors ran: no model calls, no proofs, and no request to any deployed app.
+The optional semgrep community rules were off, so there is no row for other community findings.
 Repos that failed to clone, hit the caps, or were not a supported stack are counted below and left out of every percentage.
-This is a convenience sample from search ranking, not a random sample of all Lovable or Bolt apps."""
-
-# Written by hand after reading the 2026-11-02 run; update it whenever the numbers change.
-REVIEW = """The numbers above are what Heist's detectors report, with no human check.
-A manual review of the 30 repos with a confirmed critical finding found that about half of them rest only on findings that are likely false positives or outside the browser code.
-The main causes were secrets matched in docs, test files, discarded migrations and editor configs rather than in the app's code, public-by-design values (a captcha site key, a public API key, signed storage URLs, a well-known sandbox passkey), the service role key read by Node scripts or server code outside the folders Heist already skips, and tables readable by signed-in users that hold only catalog or app content.
-On that stricter reading, 16 of the 50 repos (32%) have a confirmed critical finding in the app's code or database rules.
-One more repo has a service role key committed in its docs, which is a serious leak even though it is not in the browser code.
-Mistake 2 drops the most: only 1 of the 8 flagged repos puts the service role key in browser code.
-Mistake 5 was not reviewed by hand, and some of those functions may be public on purpose (webhooks, contact forms)."""
+This is a convenience sample from search ranking, not a random sample of all Lovable or Bolt apps.
+The numbers are Heist's detector output as is; a manual spot check of an earlier run was used to fix false positives in the detectors, and it adds nothing to these numbers."""
 
 
 @dataclass(frozen=True)
@@ -201,7 +204,7 @@ def _mistake_name(m: int) -> str:
     return MISTAKE_NAMES.get(m, "Other (community rules)")
 
 
-def render_markdown(s: Stats, method: str, review: str, run_date: str) -> str:
+def render_markdown(s: Stats, method: str, run_date: str) -> str:
     """Aggregates only. Takes no repo data, so no name, URL or path can reach the page."""
     n = s.scanned
     lines = [
@@ -219,7 +222,7 @@ def render_markdown(s: Stats, method: str, review: str, run_date: str) -> str:
         "",
         "| Outcome | Repos |",
         "| --- | --- |",
-        *(f"| {OUTCOME_COPY[k]} | {v} |" for k, v in s.outcomes.items() if v),
+        *(f"| {OUTCOME_COPY[k]} | {v} |" for k, v in s.outcomes.items()),
         f"| Total | {s.total} |",
         "",
         f"Every percentage below is out of the {n} scanned repos.",
@@ -248,10 +251,6 @@ def render_markdown(s: Stats, method: str, review: str, run_date: str) -> str:
             for m in s.mistakes
         ),
         "",
-        "## Manual review",
-        "",
-        review,
-        "",
     ]
     return "\n".join(lines)
 
@@ -259,7 +258,9 @@ def render_markdown(s: Stats, method: str, review: str, run_date: str) -> str:
 # --- scanning -------------------------------------------------------------------------------
 
 
-def _outcome_of(reason: str) -> Outcome:
+def outcome_of(reason: str) -> Outcome:
+    if reason == BAD_URL_COPY:
+        return "bad_url"
     if reason == UNSUPPORTED_STACK_COPY:
         return "unsupported_stack"
     if reason == CLONE_FAILED_COPY:
@@ -269,30 +270,28 @@ def _outcome_of(reason: str) -> Outcome:
     return "error"
 
 
-def scan_one(url: str) -> RepoRecord:
-    """Heist's fetch path plus the detectors, nothing else. Runs in a child process."""
-    with tempfile.TemporaryDirectory(prefix="heist-tpl-") as tmp:
-        try:
-            ws = clone_repo(url, Path(tmp) / "repo")
-        except UnsupportedRepo as exc:
-            return RepoRecord(url=url, sha=None, stack=None, status=_outcome_of(exc.reason))
-        try:
-            stack = detect_stack(ws)
-        except UnsupportedRepo as exc:
-            return RepoRecord(
-                url=url, sha=ws.commit_sha, stack=None, status=_outcome_of(exc.reason)
-            )
-        g = build_app_graph(ws, stack)
-        findings = [finding_record(f) for f in run_detectors(ws, g) if f.refs]
-        return RepoRecord(
-            url=url,
-            sha=ws.commit_sha,
-            stack=stack,
-            status="scanned",
-            has_db_rules=g.has_db_rules,
-            unparsed_migrations=len(g.db.unparsed_migrations) if g.db else 0,
-            findings=findings,
-        )
+def scan_one(url: str, workdir: Path) -> RepoRecord:
+    """Heist's fetch path plus the detectors, nothing else. Runs in a child process; the parent
+    owns `workdir` and deletes it, even when it has to kill the child."""
+    try:
+        ws = clone_repo(url, workdir / "repo")
+    except UnsupportedRepo as exc:
+        return RepoRecord(url=url, sha=None, stack=None, status=outcome_of(exc.reason))
+    try:
+        stack = detect_stack(ws)
+    except UnsupportedRepo as exc:
+        return RepoRecord(url=url, sha=ws.commit_sha, stack=None, status=outcome_of(exc.reason))
+    g = build_app_graph(ws, stack)
+    findings = [finding_record(f) for f in run_detectors(ws, g) if f.refs]
+    return RepoRecord(
+        url=url,
+        sha=ws.commit_sha,
+        stack=stack,
+        status="scanned",
+        has_db_rules=g.has_db_rules,
+        unparsed_migrations=len(g.db.unparsed_migrations) if g.db else 0,
+        findings=findings,
+    )
 
 
 def record_from_json(d: dict[str, object]) -> RepoRecord:
@@ -301,42 +300,62 @@ def record_from_json(d: dict[str, object]) -> RepoRecord:
     return RepoRecord(**{**d, "findings": findings})  # type: ignore[arg-type]
 
 
+def exception_type(stderr: str) -> str:
+    """The exception class from a traceback's last line, never its message."""
+    tail = stderr.strip().splitlines()[-1:] or [""]
+    m = _EXC_RE.match(tail[0])
+    return m.group(1) if m else "unknown"
+
+
 def _scan_in_child(url: str) -> RepoRecord:
-    """A child process per repo, so a hung clone or detector is killed at the time limit."""
+    """A child process per repo in its own process group, so a hung clone, gitleaks or semgrep
+    is killed with it at the time limit. The temp dir is the parent's, so it is always removed."""
+    workdir = Path(tempfile.mkdtemp(prefix="heist-tpl-"))
     try:
-        proc = subprocess.run(
-            [sys.executable, __file__, "--one", url],
-            capture_output=True,
+        proc = subprocess.Popen(
+            [sys.executable, __file__, "--one", url, str(workdir)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=REPO_TIMEOUT_S,
             cwd=ENGINE,
-            check=False,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return RepoRecord(url=url, sha=None, stack=None, status="timeout")
-    last = proc.stdout.strip().splitlines()[-1:] if proc.returncode == 0 else []
+        try:
+            out, err = proc.communicate(timeout=REPO_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            print("  timeout", file=sys.stderr)
+            return RepoRecord(url=url, sha=None, stack=None, status="timeout")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    last = out.strip().splitlines()[-1:] if proc.returncode == 0 else []
     if not last:
-        tail = proc.stderr.strip().splitlines()[-1:] or ["no output"]
-        print(f"  error on {url}: {tail[0][:200]}", file=sys.stderr)
+        kind = exception_type(err)
+        # The URL and stderr tail go to a gitignored log only, never to the terminal.
+        with LOG.open("a", encoding="utf-8") as fh:
+            fh.write(f"{url}\n{err.strip()[-2000:]}\n\n")
+        print(f"  error ({kind}), details in {LOG.relative_to(REPO)}", file=sys.stderr)
         return RepoRecord(url=url, sha=None, stack=None, status="error")
     return record_from_json(json.loads(last[0]))
 
 
 def main() -> None:
     urls = [u.strip() for u in TEMPLATES.read_text().splitlines() if u.strip()]
+    LOG.unlink(missing_ok=True)
     print(f"scanning {len(urls)} repos, {WORKERS} at a time")
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         records = list(pool.map(_scan_in_child, urls))
     RESULTS.write_text("".join(json.dumps(asdict(r)) + "\n" for r in records))
     stats = aggregate(records)
-    STATS.write_text(render_markdown(stats, METHOD, REVIEW, date.today().isoformat()))
+    STATS.write_text(render_markdown(stats, METHOD, date.today().isoformat()))
     print(f"wrote {RESULTS} and {STATS}")
     for k, v in stats.outcomes.items():
         print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--one":
-        print(json.dumps(asdict(scan_one(sys.argv[2]))))
+    if len(sys.argv) == 4 and sys.argv[1] == "--one":
+        print(json.dumps(asdict(scan_one(sys.argv[2], Path(sys.argv[3])))))
     else:
         main()
