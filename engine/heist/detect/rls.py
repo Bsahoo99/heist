@@ -6,10 +6,27 @@ from typing import Literal
 from heist.fetch import Workspace
 from heist.models import AppGraph, Finding, Policy, Table
 
-PERSONAL_NAME_RE = re.compile(
-    r"email|phone|address|message|note|body|ssn|dob|birth|secret|token|password", re.IGNORECASE
-)
+# Personal columns follow the plan's list (email, phone, address, message, note, body, ssn,
+# dob, birth, secret, token, password, plus user_id-owned rows), matched as whole snake_case
+# tokens. A strong word counts anywhere in the name unless a flag word follows it
+# (`email_enabled`). A weak word counts only as the first word (`notes`, not `error_message`).
+STRONG_PERSONAL = {
+    "email", "emails", "phone", "phones", "address", "addresses", "ssn", "dob", "birth",
+    "birthday", "birthdate", "secret", "secrets", "token", "tokens", "password", "passwords",
+}  # fmt: skip
+WEAK_PERSONAL = {"message", "messages", "note", "notes", "body"}
+FLAG_WORDS = {
+    "enabled",
+    "verified",
+    "confirmed",
+    "autoconfirm",
+    "count",
+    "sent",
+    "type",
+    "template",
+}
 OWNER_COLUMNS = {"user_id", "owner_id", "sender_id"}
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 READ_COMMANDS = {"select", "all"}
 ANY_USER_USING_RE = re.compile(
     r"""^\(?
@@ -58,8 +75,20 @@ def _open_to_any_user(p: Policy) -> bool:
     return bool(ANY_USER_USING_RE.match(using.strip()))
 
 
+def is_personal_column(name: str) -> bool:
+    if name in OWNER_COLUMNS:
+        return True
+    words = [w for w in re.split(r"[^a-z0-9]+", _CAMEL_RE.sub("_", name).lower()) if w]
+    if words and words[0] in WEAK_PERSONAL:
+        return True
+    return any(
+        w in STRONG_PERSONAL and (i + 1 == len(words) or words[i + 1] not in FLAG_WORDS)
+        for i, w in enumerate(words)
+    )
+
+
 def _personal_columns(t: Table) -> list[str]:
-    return [c.name for c in t.columns if PERSONAL_NAME_RE.search(c.name) or c.name in OWNER_COLUMNS]
+    return [c.name for c in t.columns if is_personal_column(c.name)]
 
 
 def _finding(t: Table, reason: str, policy: Policy | None, personal: list[str]) -> Finding:
@@ -73,8 +102,13 @@ def _finding(t: Table, reason: str, policy: Policy | None, personal: list[str]) 
         refs = [policy.ref]
         nodes = [f"table:{name}", f"policy:{policy.table}:{policy.name}"]
         if reason == "open_to_any_user":
-            severity = "critical"
-            title = f"Any signed-in user can read everyone's {name}"
+            # Same rule as open-to-everyone reads: no personal columns is often intended.
+            if personal:
+                severity = "critical"
+                title = f"Any signed-in user can read everyone's {name}"
+            else:
+                severity = "low"
+                title = f"Any signed-in user can read {name} (check this is meant to be shared)"
         elif personal:
             severity = "critical"
             title = f"Anyone can read every row in {name}"

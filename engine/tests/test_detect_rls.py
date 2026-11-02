@@ -1,6 +1,8 @@
 import shutil
 
-from heist.detect.rls import find_rls_issues
+import pytest
+
+from heist.detect.rls import find_rls_issues, is_personal_column
 from tests.helpers import findings_for
 
 
@@ -68,16 +70,73 @@ def test_authenticated_role_forms_open_to_any_user(tmp_copy, vuln_app_path):
     f = _sql(
         tmp_copy,
         vuln_app_path,
-        "create table a (id int);\nalter table a enable row level security;\n"
+        "create table a (id int, email text);\nalter table a enable row level security;\n"
         "create policy x on a for select using (auth.role() = 'authenticated');\n"
-        "create table b (id int);\nalter table b enable row level security;\n"
+        "create table b (id int, email text);\nalter table b enable row level security;\n"
         "create policy x on b for select using (auth.role() = 'authenticated'::text);\n"
-        "create table c (id int);\nalter table c enable row level security;\n"
+        "create table c (id int, email text);\nalter table c enable row level security;\n"
         "create policy x on c for select to authenticated using (true);\n",
     )
     for t in "abc":
         assert f[t].evidence["reason"] == "open_to_any_user", t
         assert f[t].severity == "critical"
+
+
+def test_any_user_read_of_a_table_with_no_personal_columns_is_low(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        "create table lessons (id int, title text, error_message text);\n"
+        "alter table lessons enable row level security;\n"
+        "create policy x on lessons for select to authenticated using (true);\n",
+    )
+    assert f["lessons"].evidence["reason"] == "open_to_any_user"
+    assert f["lessons"].severity == "low" and f["lessons"].status == "possible"
+    assert f["lessons"].evidence["personal_columns"] == []
+    assert "check this is meant to be shared" in f["lessons"].title
+
+
+def test_rls_off_stays_critical_without_personal_columns(tmp_copy, vuln_app_path):
+    f = _sql(tmp_copy, vuln_app_path, "create table colors (id int, name text);\n")
+    assert f["colors"].evidence["reason"] == "rls_off"
+    assert f["colors"].severity == "critical" and f["colors"].status == "confirmed"
+
+
+def test_everyone_read_with_only_flag_and_content_columns_is_low(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        "create table settings (id int, email_enabled bool, application_note text,"
+        " phonetic_transcription text);\nalter table settings enable row level security;\n"
+        "create policy x on settings for select using (true);\n",
+    )
+    assert f["settings"].severity == "low"
+    assert f["settings"].evidence["personal_columns"] == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "email", "user_email", "contact_email", "phone", "phone_number", "parent1_phone",
+        "address", "address_line1", "notes", "note", "message", "messages", "body",
+        "date_of_birth", "dob", "password_hash", "confirmation_token", "user_id",
+        "owner_id", "sender_id", "userEmail", "phoneNumber",
+    ],
+)  # fmt: skip
+def test_personal_column_names(name):
+    assert is_personal_column(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "email_enabled", "email_autoconfirm", "email_confirmed_at", "phone_verified",
+        "error_message", "last_message_at", "application_note", "analysis_notes",
+        "phonetic_transcription", "title", "notebook", "addressed", "id", "created_at",
+    ],
+)  # fmt: skip
+def test_non_personal_column_names(name):
+    assert not is_personal_column(name)
 
 
 def test_everyone_wins_over_any_user(tmp_copy, vuln_app_path):
