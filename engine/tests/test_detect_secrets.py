@@ -342,6 +342,9 @@ REAL_SERVICE = _jwt({"iss": "supabase", "ref": "abcdefghijklmnop", "role": "serv
         (DEMO_SERVICE, True),
         (REAL_SERVICE, False),
         (_jwt({"role": "authenticated", "sub": "u"}), False),
+        (_jwt({"application": "a", "iss": "vendor", "jti": "j", "iat": 1}), False),
+        (_jwt({"url": "audio/a.mp3", "iat": 1}), False),
+        (_jwt({"sub": "svc", "exp": 2}), False),
     ],
 )
 def test_public_by_design_jwts(value, public):

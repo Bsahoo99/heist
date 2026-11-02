@@ -91,8 +91,10 @@ def is_public_by_design(value: str) -> bool:
     payload = decode_jwt_payload(value)
     if payload is None:
         return False
-    # Anon keys, local demo keys, and JWTs with no role (signed storage URLs and the like).
-    return payload.get("role") in (None, "anon") or is_demo_key(value)
+    # Anon keys, local demo keys, and signed storage URL tokens (no role, a url and an expiry).
+    if payload.get("role") is None:
+        return "exp" in payload and isinstance(payload.get("url"), str)
+    return payload.get("role") == "anon" or is_demo_key(value)
 
 
 def is_admin_key(value: str) -> bool:
