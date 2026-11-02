@@ -731,3 +731,30 @@ def test_validation_crash_falls_back_instead_of_raising(
     assert how == "fallback"
     assert t == fallback_trace(f_messages, graph, ws)
     assert fake_client.calls == 2
+
+
+@pytest.mark.parametrize("mistake", [1, 2])
+def test_committed_file_template_says_where_the_key_is(tmp_copy, vuln_app_path, mistake):
+    root = tmp_copy(vuln_app_path)
+    (root / "docs").mkdir()
+    (root / "docs/SETUP.md").write_text("# Setup\n\nkey: <placeholder>\n")
+    ws = load_workspace(root)
+    g = build_app_graph(ws, detect_stack(ws))
+    f = Finding(
+        id=f"m{mistake}-committed-docs-setup-md-3",
+        mistake=mistake,
+        severity="critical" if mistake == 2 else "high",
+        status="confirmed" if mistake == 2 else "possible",
+        title="committed",
+        node_ids=[],
+        refs=[CodeRef(file="docs/SETUP.md", start_line=3, end_line=3)],
+        source="gitleaks",
+        evidence={"rule": "jwt", "preview": "eyJ...", "location": "public_file"},
+    )
+    for t in (fallback_trace(f, g), fallback_trace(f, g, ws)):
+        assert validate_trace(t, f, g, ws)[1] == []
+        text = t.model_dump_json()
+        assert "docs/SETUP.md" in t.fix.explanation and "public" in t.fix.explanation
+        assert "bundle" not in text and "front end" not in text
+        assert any(s.file == "docs/SETUP.md" and s.line == 3 for s in t.attack_path)
+        assert "\u2014" not in text

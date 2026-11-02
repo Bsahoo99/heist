@@ -375,3 +375,78 @@ def test_real_service_role_jwt_value_still_flagged(tmp_copy, vuln_app_path):
 def test_redaction_keeps_the_narrow_public_names():
     assert PUBLIC_NAME_RE.search("VITE_HCAPTCHA_SITEKEY") is None
     assert PUBLIC_NAME_RE.search("VITE_COPILOTKIT_PUBLIC_API_KEY") is None
+
+
+# --- secrets committed outside the browser code ------------------------------------------------
+
+
+def _gitleaks(root):
+    return [x for x in findings_for(root, find_frontend_secrets) if x.source == "gitleaks"]
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+@pytest.mark.parametrize("rel", ["docs/SETUP.md", "deploy.ps1", "n8n-workflows/flow.json"])
+def test_admin_key_committed_in_a_public_file_is_confirmed(tmp_copy, vuln_app_path, rel):
+    root = tmp_copy(vuln_app_path)
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(f'service key: "{REAL_SERVICE}"\n')
+    gl = _gitleaks(root)
+    assert [(x.mistake, x.severity, x.status) for x in gl] == [(2, "critical", "confirmed")]
+    assert gl[0].title == "Your Supabase admin key is committed in a public file"
+    assert gl[0].evidence["location"] == "public_file" and gl[0].refs[0].file == rel
+    assert REAL_SERVICE not in gl[0].model_dump_json()
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+@pytest.mark.parametrize(
+    "rel", ["README.md", "docs/env.txt", ".cursor/mcp.json", "supabase/config.toml"]
+)
+def test_other_key_committed_in_a_public_file_is_possible(tmp_copy, vuln_app_path, rel):
+    root = tmp_copy(vuln_app_path)
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(f'token = "{GH_LIT}"\n')
+    gl = _gitleaks(root)
+    assert [(x.mistake, x.severity, x.status) for x in gl] == [(1, "high", "possible")]
+    assert "committed in a public file" in gl[0].title
+    assert "browser" not in gl[0].title
+    assert gl[0].evidence["location"] == "public_file"
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+def test_key_in_unreachable_source_file_is_possible_not_browser(tmp_copy, vuln_app_path):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / "src/lib/unused.ts").write_text(f'export const token = "{GH_LIT}"\n')
+    gl = _gitleaks(root)
+    assert [(x.mistake, x.status, x.refs[0].file) for x in gl] == [
+        (1, "possible", "src/lib/unused.ts")
+    ]
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+def test_key_in_reachable_source_file_is_confirmed_browser_code(tmp_copy, vuln_app_path):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / "src/pages/Upload.tsx").write_text(f'export const token = "{GH_LIT}"\n')
+    gl = _gitleaks(root)
+    assert [(x.mistake, x.severity, x.status) for x in gl] == [(1, "critical", "confirmed")]
+    assert gl[0].title == "A secret key is hardcoded in your browser code"
+    assert "location" not in gl[0].evidence
+
+
+@pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks not installed")
+@pytest.mark.parametrize(
+    "rel, value",
+    [
+        ("tests/fixtures/keys.ts", GH_LIT),
+        ("cypress/e2e/flow.cy.ts", GH_LIT),
+        (".bolt/supabase_discarded_migrations/0001_x.sql", GH_LIT),
+        ("supabase/migrations/0009_songs.sql", ROLELESS_JWT),
+        ("docs/LOCAL.md", DEMO_SERVICE),
+    ],
+)
+def test_tests_discarded_migrations_and_public_tokens_are_skipped(
+    tmp_copy, vuln_app_path, rel, value
+):
+    root = tmp_copy(vuln_app_path)
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(f"-- '{value}'\n")
+    assert _gitleaks(root) == []

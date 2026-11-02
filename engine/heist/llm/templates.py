@@ -10,6 +10,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from heist.detect.secrets import PUBLIC_FILE
 from heist.fetch import Workspace
 from heist.models import (
     AppGraph,
@@ -309,6 +310,8 @@ def _owner_column(ctx: _Ctx, table: str) -> str | None:
 
 
 def _m1(ctx: _Ctx) -> TraceOut:
+    if ctx.ev("location", "") == PUBLIC_FILE:
+        return _committed(ctx, admin=False)
     f = ctx.f
     var = ctx.ev("var", "the secret key")
     ref = f.refs[0] if f.refs else None
@@ -441,6 +444,117 @@ def _secret_diff(ctx: _Ctx, ref: CodeRef | None, var: str, replacement: str | No
     return _file_diff(ref.file, [(ref.start_line, [_hide_literals(old_line)], [new])])
 
 
+def _committed(ctx: _Ctx, *, admin: bool) -> TraceOut:
+    """A key committed in a public file the browser never loads (docs, config, scripts)."""
+    ref = ctx.f.refs[0] if ctx.f.refs else None
+    where = _node_for_ref(ctx, ref) if ref else None
+    what = "the service role key" if admin else "a key"
+    file = ref.file if ref else "a file in the repo"
+    tables = _vault_targets(ctx) if admin else []
+
+    ghost = [
+        _visitor(ctx, "A customer walks up to the shop."),
+        _desk(
+            ctx,
+            "They check in at the guard desk and get a pass with their name on it.",
+            "Supabase Auth ties every request to one user.",
+            "Keys stay in the server's secret store, never in files anyone can read.",
+            "the user's own session",
+        ),
+    ]
+    attack = [_visitor(ctx, "Someone with bad intentions opens the app's public code on GitHub.")]
+    if where and ref:
+        attack.append(
+            _at_ref(
+                where,
+                ref,
+                f"{what}, in a public file",
+                (
+                    "Left in a public notebook is the master key to the whole building."
+                    if admin
+                    else "Left in a public notebook is what looks like a key to an outside service."
+                ),
+                "The repo is public, so every file in it is public, including old commits. A key "
+                "written there belongs to everyone until it is rotated.",
+                f"{file} line {ref.start_line} holds {what}. The browser never loads this file, "
+                "but anyone can read it on GitHub.",
+            )
+        )
+    if admin:
+        attack.append(
+            _desk(
+                ctx,
+                "With the master key they walk straight past the guard desk.",
+                "The service role is not a user, so no one checks it.",
+                "Requests made with the service role key bypass Supabase Auth and row level security.",
+                "the service role key instead of a user session",
+            )
+        )
+        for t in tables:
+            attack.append(
+                _at(
+                    t,
+                    f"every row in {t.name}",
+                    f"Every box in the vault opens, including {t.name}.",
+                    "Row level security is skipped entirely for the service role.",
+                    f"With the service role, reads and writes on {t.name} ignore every policy.",
+                )
+            )
+    if len(attack) < 3:
+        attack.append(
+            _desk(
+                ctx,
+                "They never needed to sign in at the guard desk.",
+                "Signing in protects user data, not keys that are already public.",
+                "Supabase Auth is not involved: the key works on its own.",
+                "no account at all",
+            )
+        )
+
+    removed = "<removed: this key now lives in a secret store>"
+    if admin:
+        explanation = (
+            f"The Supabase service role key is written in {file}, and the repo is public, so "
+            "anyone can copy it and skip every database rule. Rotate it now in the Supabase "
+            "dashboard (Project Settings, API), then remove it from the file. Deleting the line "
+            "is not enough on its own, because old commits still hold it."
+        )
+        prompt = (
+            f"{ctx.tool}, please remove the Supabase service role key from {file}. Code that "
+            "needs it should read it from a server-side secret, never from a file in the repo. "
+            "I will rotate the key in the Supabase dashboard."
+        )
+    else:
+        explanation = (
+            f"{file} holds something that looks like a key, and the repo is public, so anyone "
+            "can copy it. Check whether it is a real key. If it is, rotate it in the provider's "
+            "dashboard, remove it from the file, and keep it in a secret store such as an Edge "
+            "Function secret or your host's environment variables. Old commits still hold it, "
+            "so rotating is the step that matters."
+        )
+        prompt = (
+            f"{ctx.tool}, please remove the key written in {file} and read it from a "
+            "server-side secret instead. I will rotate the old key."
+        )
+    return TraceOut(
+        ghost_path=ghost,
+        attack_path=attack,
+        fix=FixOut(
+            explanation=explanation,
+            diff=_committed_diff(ctx, ref, what, removed),
+            prompt=prompt,
+        ),
+    )
+
+
+def _committed_diff(ctx: _Ctx, ref: CodeRef | None, what: str, removed: str) -> str:
+    lines = ctx.lines(ref.file) if ref else None
+    if ref is not None and not (lines and ref.start_line <= len(lines)):
+        note = f"TODO: remove {what} from this file and rotate it"
+        return _file_diff(ref.file, [(ref.start_line - 1, [], [note])])
+    return _secret_diff(ctx, ref, what, removed)
+
+
 # --- mistake 2: service role key in the front end ---------------------------------------
 
 
@@ -451,6 +565,8 @@ def _vault_targets(ctx: _Ctx, limit: int = 2) -> list[Node]:
 
 
 def _m2(ctx: _Ctx) -> TraceOut:
+    if ctx.ev("location", "") == PUBLIC_FILE:
+        return _committed(ctx, admin=True)
     f = ctx.f
     var = ctx.ev("var", "SUPABASE_SERVICE_ROLE_KEY")
     ref = f.refs[0] if f.refs else None

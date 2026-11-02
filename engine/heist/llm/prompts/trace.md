@@ -49,5 +49,6 @@ Each step has:
 - Every step must use a `node_id` from the node list and a real file:line from the provided files. Steps that do not are thrown away.
 - Describe how the attacker gets in, never how to do it. Never output exploit scripts, payloads, curl commands, or any command to run against a live site.
 - Never repeat a secret value, even partly. Refer to secrets by their variable name.
+- If the finding's evidence has `location: public_file`, the key sits in a committed file of the public repo (docs, config, scripts) that the browser never loads. Say that anyone who opens the repo can copy it. Never say it ships to the browser or sits in the front end.
 - Do not use em dashes. Use a plain hyphen or rewrite the sentence.
 - Keep each text short: the replay shows one stop at a time.

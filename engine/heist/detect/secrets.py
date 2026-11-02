@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from heist.detect.browser import SOURCE_EXTS, browser_files, is_server_path
+from heist.detect.browser import browser_files, is_server_path, is_test_file
 from heist.fetch import Workspace
 from heist.models import AppGraph, CodeRef, Finding
 
@@ -32,6 +32,11 @@ SERVICE_ROLE_RE = re.compile(r"\b[A-Za-z0-9_]*SERVICE_ROLE[A-Za-z0-9_]*\b")
 ENV_ACCESS_RE = re.compile(r"\benv\b")
 VITE_ENV = "import.meta.env"
 GITLEAKS_TIMEOUT = 60
+# Evidence "location" for a secret in a committed file the front-end bundle never reaches.
+PUBLIC_FILE = "public_file"
+ADMIN_ROLES = ("service_role", "supabase_admin")
+DISCARDED_RE = re.compile(r"(?:^|/)\.bolt/supabase_discarded_migrations/")
+FUNCTIONS_PREFIX = "supabase/functions/"
 
 
 def _is_env_named(rel: str) -> bool:
@@ -300,27 +305,70 @@ def _gitleaks_findings(
             secret = str(hit.get("Secret", ""))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         except (KeyError, ValueError, TypeError):
             continue
-        if rel not in files or _is_env_named(rel):
-            continue
-        is_source = Path(rel).suffix.lower() in SOURCE_EXTS
-        if (is_source and rel not in browser) or (rel, line_no) in flagged:
+        if rel not in files or _is_env_named(rel) or (rel, line_no) in flagged:
             continue
         if is_public_by_design(secret) or _public_name_on_line(ws, rel, line_no):
             continue
-        findings.append(
-            Finding(
-                id=f"m1-gitleaks-{_slug(rule)}-{_slug(rel)}-{line_no}",
-                mistake=1,
-                severity="critical",
-                status="confirmed",
-                title="A secret key is hardcoded in your browser code",
-                node_ids=[],
-                refs=[CodeRef(file=rel, start_line=line_no, end_line=max(line_no, end))],
-                source="gitleaks",
-                evidence={"rule": rule, "preview": _preview(secret)},
+        ref = CodeRef(file=rel, start_line=line_no, end_line=max(line_no, end))
+        evidence: dict[str, Any] = {"rule": rule, "preview": _preview(secret)}
+        if rel in browser:
+            findings.append(
+                Finding(
+                    id=f"m1-gitleaks-{_slug(rule)}-{_slug(rel)}-{line_no}",
+                    mistake=1,
+                    severity="critical",
+                    status="confirmed",
+                    title="A secret key is hardcoded in your browser code",
+                    node_ids=[],
+                    refs=[ref],
+                    source="gitleaks",
+                    evidence=evidence,
+                )
             )
-        )
+        elif not _skip_committed(rel):
+            findings.append(_committed_finding(rule, rel, line_no, ref, secret, evidence))
     return findings
+
+
+def _skip_committed(rel: str) -> bool:
+    """Committed files whose hits are not worth reporting: tests and fixtures, Bolt's discarded
+    migrations, and Edge Function code (the Edge Function checks cover it)."""
+    return (
+        is_test_file(rel)
+        or DISCARDED_RE.search(rel) is not None
+        or rel.startswith(FUNCTIONS_PREFIX)
+    )
+
+
+def _committed_finding(
+    rule: str, rel: str, line_no: int, ref: CodeRef, secret: str, evidence: dict[str, Any]
+) -> Finding:
+    """A hit in a committed file the bundle never reaches. The repo is public, so it is still a
+    leak, but only an admin key can be confirmed from the value alone."""
+    evidence = {**evidence, "location": PUBLIC_FILE}
+    if _jwt_role(secret) in ADMIN_ROLES:
+        return Finding(
+            id=f"m2-committed-{_slug(rel)}-{line_no}",
+            mistake=2,
+            severity="critical",
+            status="confirmed",
+            title="Your Supabase admin key is committed in a public file",
+            node_ids=[],
+            refs=[ref],
+            source="gitleaks",
+            evidence=evidence,
+        )
+    return Finding(
+        id=f"m1-gitleaks-{_slug(rule)}-{_slug(rel)}-{line_no}",
+        mistake=1,
+        severity="high",
+        status="possible",
+        title="A key may be committed in a public file (check it, then rotate it)",
+        node_ids=[],
+        refs=[ref],
+        source="gitleaks",
+        evidence=evidence,
+    )
 
 
 def find_frontend_secrets(ws: Workspace, g: AppGraph) -> list[Finding]:
