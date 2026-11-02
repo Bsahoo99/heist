@@ -35,14 +35,14 @@ Every percentage below is out of the 50 scanned repos.
 
 ## Headline
 
-Repos with at least one confirmed critical finding: 22 of 50 (44%).
-Repos with at least one confirmed finding of any severity: 36 of 50 (72%).
-Repos with only findings marked possible, not confirmed: 3 of 50 (6%).
+Repos with at least one confirmed critical finding: 28 of 50 (56%).
+Repos with at least one confirmed finding of any severity: 39 of 50 (78%).
+Repos with only findings marked possible, not confirmed: 2 of 50 (4%).
 Repos with no database rules (migrations) in the repo: 9 of 50 (18%).
 For those repos Heist cannot check tables or storage buckets, so mistakes 3 and 4 are unknown, not clean.
 Repos with migration files Heist could not read: 8 of 50 (16%).
-Findings per repo: median 3.5, range 0 to 85.
-Confirmed findings per repo: median 2, range 0 to 75.
+Findings per repo: median 3.5, range 0 to 89.
+Confirmed findings per repo: median 2, range 0 to 79.
 
 ## By mistake
 
@@ -52,8 +52,8 @@ A repo is under Possible, not confirmed only when none of its findings for that 
 | Mistake | Confirmed | Possible, not confirmed |
 | --- | --- | --- |
 | 1. Secret keys in browser code or committed public files | 4 of 50 (8%) | 11 of 50 (22%) |
-| 2. Supabase admin (service role) key in browser code or a committed public file | 4 of 50 (8%) | 0 of 50 (0%) |
-| 3. Tables anyone (or any signed-in user) can read | 20 of 50 (40%) | 6 of 50 (12%) |
+| 2. Supabase admin (service role) key in browser code or a committed public file | 5 of 50 (10%) | 0 of 50 (0%) |
+| 3. Tables anyone (or any signed-in user) can read or change | 26 of 50 (52%) | 2 of 50 (4%) |
 | 4. Public or unprotected storage buckets | 0 of 50 (0%) | 1 of 50 (2%) |
 | 5. Server functions or routes with no sign-in check | 25 of 50 (50%) | 0 of 50 (0%) |
 | 6. Records changed by an ID from the request without an owner check | 0 of 50 (0%) | 12 of 50 (24%) |
