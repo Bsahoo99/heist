@@ -692,6 +692,10 @@ def _m3(ctx: _Ctx) -> TraceOut:
         return _m0(ctx)
     table = t_node.name
     reason = ctx.ev("reason", "rls_off")
+    access = ctx.ev("access", "read")
+    # What the broken lock allows: read, change (insert, update or delete), or both.
+    verb = {"write": "change", "read_write": "read and change"}.get(access, "read")
+    kind = "read" if access == "read" else "access"
     policy = next((n for i in f.node_ids if (n := ctx.node(i)) and n.kind == "policy"), None)
     ref = f.refs[0] if f.refs else t_node.ref
     owner = _owner_column(ctx, table)
@@ -769,8 +773,8 @@ def _m3(ctx: _Ctx) -> TraceOut:
                 "Here is the broken lock: it checks that you have a pass, not that the box is yours."
                 if reason == "open_to_any_user"
                 else "Here is the broken lock: it opens for anyone at all.",
-                "A read policy must compare the row's owner with the user. This one does not.",
-                f"Policy {policy.name} on {table} lets every {'signed-in user' if reason == 'open_to_any_user' else 'visitor'} read every row.",
+                f"A {'read' if access == 'read' else 'write'} policy must compare the row's owner with the user. This one does not.",
+                f"Policy {policy.name} on {table} lets every {'signed-in user' if reason == 'open_to_any_user' else 'visitor'} {verb} every row.",
             )
         )
         attack.append(
@@ -778,8 +782,12 @@ def _m3(ctx: _Ctx) -> TraceOut:
                 t_node,
                 f"every row in {table}",
                 f"Every box in {table} swings open, not just their own.",
-                "Without an owner check, one query returns everyone's records.",
-                f"A plain select on {table} returns all rows.",
+                "Without an owner check, one query returns everyone's records."
+                if access == "read"
+                else "Without an owner check, anyone can rewrite or delete everyone's records.",
+                f"A plain select on {table} returns all rows."
+                if access == "read"
+                else f"An insert, update or delete on {table} is allowed on every row.",
             )
         )
     else:
@@ -801,7 +809,13 @@ def _m3(ctx: _Ctx) -> TraceOut:
         sql += [f"alter table {qualified} enable row level security;", ""]
     elif policy:
         sql += [f'drop policy "{policy.name}" on {qualified};', ""]
-    if owner:
+    if owner and access != "read":
+        sql += [
+            f'create policy "{_slug(table)}_own" on {qualified}',
+            f"  for all to authenticated using ((select auth.uid()) = {owner})",
+            f"  with check ((select auth.uid()) = {owner});",
+        ]
+    elif owner:
         sql += [
             f'create policy "{_slug(table)}_select_own" on {qualified}',
             f"  for select to authenticated using ((select auth.uid()) = {owner});",
@@ -816,12 +830,12 @@ def _m3(ctx: _Ctx) -> TraceOut:
     public_ok = reason == "open_to_everyone" and f.severity == "low"
     what = {
         "rls_off": f"Row level security is off for {table}, so anyone with the public anon key can read every row.",
-        "open_to_any_user": f"The read rule on {table} only checks that someone is signed in, so any account can read every row.",
-    }.get(reason, f"The read rule on {table} lets anyone read every row.")
+        "open_to_any_user": f"The {kind} rule on {table} only checks that someone is signed in, so any account can {verb} every row.",
+    }.get(reason, f"The {kind} rule on {table} lets anyone {verb} every row.")
     how = (
-        f"Add a new migration that turns the lock on and lets each user read only rows where {owner} is their own id."
+        f"Add a new migration that turns the lock on and lets each user {verb} only rows where {owner} is their own id."
         if owner
-        else "Add a new migration that turns the lock on, then add a rule that says who may read each row."
+        else f"Add a new migration that turns the lock on, then add a rule that says who may {verb} each row."
     )
     if public_ok:
         how = (
@@ -843,8 +857,9 @@ def _m3(ctx: _Ctx) -> TraceOut:
                     else "please "
                 )
                 + f"lock down the {table} table in Supabase. Make sure row level security is "
-                "enabled and replace any read policy that lets everyone or every signed-in user "
-                "read all rows with one that only lets users read their own rows"
+                f"enabled and replace any {kind + ' ' if access == 'read' else ''}policy that lets "
+                f"everyone or every signed-in user {verb} all rows with one that only lets users "
+                f"{verb} their own rows"
                 f"{f' (where {owner} = auth.uid())' if owner else ''}. Add it as a new migration."
             ),
         ),

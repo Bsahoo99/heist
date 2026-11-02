@@ -28,6 +28,8 @@ FLAG_WORDS = {
 OWNER_COLUMNS = {"user_id", "owner_id", "sender_id"}
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 READ_COMMANDS = {"select", "all"}
+WRITE_COMMANDS = {"insert", "update", "delete", "all"}
+Reason = Literal["open_to_everyone", "open_to_any_user"]
 ANY_USER_USING_RE = re.compile(
     r"""^\(?
     (?:
@@ -45,34 +47,52 @@ def _roles(p: Policy) -> set[str]:
     return set(p.roles) - {"service_role"}  # service_role bypasses RLS anyway
 
 
-def _is_read_policy(p: Policy) -> bool:
-    return p.permissive and p.command in READ_COMMANDS
+def _gate(p: Policy) -> str | None:
+    """The expression that decides which rows the policy lets through."""
+    if p.command == "insert":
+        return p.check
+    if p.command == "update":
+        return p.using if p.using is not None else p.check
+    return p.using
 
 
-def _closed_by_restrictive(t: Table, opener: Policy) -> bool:
-    """A restrictive read policy ANDs with permissive ones, so it can close the opening."""
+def _opening(p: Policy) -> Reason | None:
+    """Who a permissive policy lets through on every row: everyone, any signed-in user, or no
+    one in particular (None)."""
+    gate = _gate(p)
+    if not p.permissive or gate is None:
+        return None
+    roles = _roles(p)
+    if gate == "true":
+        if {"public", "anon"} & roles:
+            return "open_to_everyone"
+        return "open_to_any_user" if roles == {"authenticated"} else None
+    gate = SELECT_UID_RE.sub("auth.uid()", gate)
+    return "open_to_any_user" if ANY_USER_USING_RE.match(gate.strip()) else None
+
+
+def _closed_by_restrictive(t: Table, opener: Policy, commands: set[str]) -> bool:
+    """A restrictive policy ANDs with permissive ones, so it can close the opening."""
     opening = _roles(opener)
     for r in t.policies:
-        if r.permissive or r.command not in READ_COMMANDS:
+        if r.permissive or r.command not in commands:
             continue
-        if r.using is None or r.using == "true":
+        gate = _gate(r)
+        if gate is None or gate == "true":
             continue
         if "public" in r.roles or opening <= set(r.roles):
             return True
     return False
 
 
-def _open_to_everyone(p: Policy) -> bool:
-    return p.using == "true" and bool({"public", "anon"} & _roles(p))
-
-
-def _open_to_any_user(p: Policy) -> bool:
-    if p.using is None:
-        return False
-    if p.using == "true":
-        return _roles(p) == {"authenticated"}
-    using = SELECT_UID_RE.sub("auth.uid()", p.using)
-    return bool(ANY_USER_USING_RE.match(using.strip()))
+def _first_open(t: Table, commands: set[str], reason: Reason) -> Policy | None:
+    for p in t.policies:
+        if p.command not in commands or _opening(p) != reason:
+            continue
+        closing = commands if p.command == "all" else {p.command, "all"}
+        if not _closed_by_restrictive(t, p, closing):
+            return p
+    return None
 
 
 def is_personal_column(name: str) -> bool:
@@ -91,40 +111,56 @@ def _personal_columns(t: Table) -> list[str]:
     return [c.name for c in t.columns if is_personal_column(c.name)]
 
 
-def _finding(t: Table, reason: str, policy: Policy | None, personal: list[str]) -> Finding:
+def _finding(
+    t: Table,
+    reason: str,
+    policy: Policy | None,
+    personal: list[str],
+    *,
+    reads: bool = True,
+    writes: bool = True,
+) -> Finding:
+    """Open writes and reads of personal data are critical. Only a SELECT-only read of a table
+    with no personal columns is low ("check this is intended", plan Review Focus 2)."""
     name = t.name
-    severity: Literal["critical", "low"]
+    who = "Any signed-in user" if reason == "open_to_any_user" else "Anyone"
+    critical = reason == "rls_off" or writes or bool(personal)
     if reason == "rls_off":
-        severity, title = "critical", f"Anyone can read every row in {name}"
+        title = f"Anyone can read every row in {name}"
+    elif not reads:
+        title = f"{who} can change every row in {name}"
+    elif writes and not personal:
+        title = f"{who} can read and change every row in {name}"
+    elif critical:
+        title = (
+            f"Any signed-in user can read everyone's {name}"
+            if reason == "open_to_any_user"
+            else f"Anyone can read every row in {name}"
+        )
+    elif reason == "open_to_any_user":
+        title = f"Any signed-in user can read {name} (check this is meant to be shared)"
+    else:
+        title = f"Anyone can read {name} (check this is meant to be public)"
+    if policy is None:
         refs, nodes = [t.ref], [f"table:{name}"]
     else:
-        assert policy is not None
         refs = [policy.ref]
         nodes = [f"table:{name}", f"policy:{policy.table}:{policy.name}"]
-        if reason == "open_to_any_user":
-            # Same rule as open-to-everyone reads: no personal columns is often intended.
-            if personal:
-                severity = "critical"
-                title = f"Any signed-in user can read everyone's {name}"
-            else:
-                severity = "low"
-                title = f"Any signed-in user can read {name} (check this is meant to be shared)"
-        elif personal:
-            severity = "critical"
-            title = f"Anyone can read every row in {name}"
-        else:
-            severity = "low"
-            title = f"Anyone can read {name} (check this is meant to be public)"
+    evidence: dict[str, object] = {"table": name, "reason": reason, "personal_columns": personal}
+    if reason != "rls_off" and writes:
+        # Read-only openings carry no "access" key, as before; readers default it to "read".
+        evidence["access"] = "read_write" if reads else "write"
+    severity: Literal["critical", "low"] = "critical" if critical else "low"
     return Finding(
         id=f"m3-{name}",
         mistake=3,
         severity=severity,
-        status="possible" if severity == "low" else "confirmed",
+        status="confirmed" if critical else "possible",
         title=title,
         node_ids=nodes,
         refs=refs,
         source="heist",
-        evidence={"table": name, "reason": reason, "personal_columns": personal},
+        evidence=evidence,
     )
 
 
@@ -139,13 +175,17 @@ def find_rls_issues(ws: Workspace, g: AppGraph) -> list[Finding]:
         if not t.rls_enabled:
             out.append(_finding(t, "rls_off", None, personal))
             continue
-        reads = [p for p in t.policies if _is_read_policy(p)]
-        reads = [p for p in reads if not _closed_by_restrictive(t, p)]
-        everyone = next((p for p in reads if _open_to_everyone(p)), None)
-        if everyone is not None:
-            out.append(_finding(t, "open_to_everyone", everyone, personal))
-            continue
-        any_user = next((p for p in reads if _open_to_any_user(p)), None)
-        if any_user is not None:
-            out.append(_finding(t, "open_to_any_user", any_user, personal))
+        # Everyone beats any signed-in user; reads lead the story when both are open.
+        for reason in ("open_to_everyone", "open_to_any_user"):
+            read = _first_open(t, READ_COMMANDS, reason)
+            write = _first_open(t, WRITE_COMMANDS, reason)
+            if read is None and write is None:
+                continue
+            opener = read or write
+            out.append(
+                _finding(
+                    t, reason, opener, personal, reads=read is not None, writes=write is not None
+                )
+            )
+            break
     return out

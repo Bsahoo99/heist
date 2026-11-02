@@ -556,3 +556,22 @@ def test_storage_policy_maps_to_its_bucket(clean_app_path, tmp_copy):
     _assert_steps_on_map(s)
     flagged = {i.node_id for z in s.zones for i in z.items if i.flagged}
     assert flagged == {"bucket:pet-photos", "bucket:id-documents"}
+
+
+def test_prove_skips_write_only_openings(tmp_copy, vuln_app_path):
+    root = tmp_copy(vuln_app_path)
+    (root / "supabase/migrations/0004_w.sql").write_text(
+        "create table public.guestbook (id int, title text);\n"
+        "alter table public.guestbook enable row level security;\n"
+        "create policy g on public.guestbook for insert with check (true);\n"
+    )
+    seen: list[list[str]] = []
+
+    def prove(db: DbSchema, ws: Workspace, tables: list[str]) -> dict[str, list[ProofRow]]:
+        seen.append(tables)
+        return {}
+
+    s = run_analysis(str(root), lambda e: None, None, prove)
+    g = next(f for f in s.findings if f.id == "m3-guestbook")
+    assert g.severity == "critical" and g.status == "confirmed"
+    assert seen == [["adoption_requests", "messages"]]

@@ -118,7 +118,14 @@ def _prove(
     table_of: dict[str, str] = {}
     for f in findings:
         table = f.evidence.get("table")
-        if f.mistake == PROVED_MISTAKE and f.status == "confirmed" and isinstance(table, str):
+        # The proof reads rows, so it cannot prove a write-only opening.
+        read_leak = f.evidence.get("access") != "write"
+        if (
+            f.mistake == PROVED_MISTAKE
+            and f.status == "confirmed"
+            and read_leak
+            and isinstance(table, str)
+        ):
             table_of[f.id] = table
     tables = list(dict.fromkeys(table_of.values()))
     if prove is None or g.db is None or not tables:

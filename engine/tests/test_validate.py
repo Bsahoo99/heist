@@ -758,3 +758,13 @@ def test_committed_file_template_says_where_the_key_is(tmp_copy, vuln_app_path, 
         assert "bundle" not in text and "front end" not in text
         assert any(s.file == "docs/SETUP.md" and s.line == 3 for s in t.attack_path)
         assert "\u2014" not in text
+
+
+@pytest.mark.parametrize("access, verb", [("write", "change"), ("read_write", "read and change")])
+def test_m3_template_names_open_writes(vuln_findings, graph, ws, access, verb):
+    base = next(f for f in vuln_findings if f.id == "m3-adoption_requests")
+    f = base.model_copy(update={"evidence": {**base.evidence, "access": access}})
+    t = fallback_trace(f, graph, ws)
+    assert validate_trace(t, f, graph, ws)[1] == []
+    assert f"can {verb} every row" in t.fix.explanation
+    assert any(f" {verb} every row" in s.code for s in t.attack_path)
