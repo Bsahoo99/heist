@@ -4,8 +4,9 @@ Vite: from the module scripts in `index.html` (else `src/main.*`), following imp
 Next: from every file under `app/` and `pages/`, minus API routes, route handlers and server
 actions, following imports. Without an entry point, every source file in a front-end folder is
 an entry instead. Either way, files that only run on a server never count: "use server" and
-"server-only" files, route handlers, Node shebang scripts, tests, `backend/` and `server/`
-folders, Edge Function sources, and root config or Node scripts the bundle does not import.
+"server-only" files, route handlers, Node shebang scripts, `backend/` and `server/` folders,
+and Edge Function sources. Tests and root config or Node scripts never start the walk, but they
+count when the bundle imports them.
 """
 
 import posixpath
@@ -39,8 +40,14 @@ def is_test_file(rel: str) -> bool:
 
 
 def is_server_path(rel: str) -> bool:
-    """Paths that are server or tooling code by where they live, whatever imports them."""
-    return bool(SERVER_DIR_RE.search(rel) or ROUTE_RE.search(rel)) or is_test_file(rel)
+    """Paths that are server code by where they live, whatever imports them."""
+    return bool(SERVER_DIR_RE.search(rel) or ROUTE_RE.search(rel))
+
+
+def _is_entry(rel: str) -> bool:
+    """A file that may start the walk. Tests never do, but a test-named folder the bundle
+    imports (`src/pages/tests/Quiz.tsx`) is still reached through that import."""
+    return rel.endswith(SOURCE_EXTS) and not is_server_path(rel) and not is_test_file(rel)
 
 
 def _is_package_root(ws: Workspace, parts: tuple[str, ...]) -> bool:
@@ -84,19 +91,11 @@ def _vite_entries(ws: Workspace, present: set[str]) -> list[str]:
 
 
 def _next_entries(present: set[str]) -> list[str]:
-    return sorted(
-        rel
-        for rel in present
-        if rel.startswith(NEXT_ROOTS) and rel.endswith(SOURCE_EXTS) and not is_server_path(rel)
-    )
+    return sorted(rel for rel in present if rel.startswith(NEXT_ROOTS) and _is_entry(rel))
 
 
 def _fallback_entries(ws: Workspace, present: set[str]) -> list[str]:
-    return sorted(
-        rel
-        for rel in present
-        if rel.endswith(SOURCE_EXTS) and not is_server_path(rel) and not is_node_script(ws, rel)
-    )
+    return sorted(rel for rel in present if _is_entry(rel) and not is_node_script(ws, rel))
 
 
 def _globbed(rel: str, text: str, present: set[str]) -> list[str]:

@@ -450,3 +450,23 @@ def test_tests_discarded_migrations_and_public_tokens_are_skipped(
     (root / rel).parent.mkdir(parents=True, exist_ok=True)
     (root / rel).write_text(f"-- '{value}'\n")
     assert _gitleaks(root) == []
+
+
+# --- fix round 2 ---------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("rel", ["src/pages/tests/Quiz.tsx", "src/fixtures/data.ts"])
+def test_test_named_folder_the_bundle_imports_is_browser_code(tmp_copy, vuln_app_path, rel):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(BROWSER_LINE)
+    spec = "../" + rel.removeprefix("src/").rsplit(".", 1)[0]
+    (root / "src/pages/Upload.tsx").write_text(f"import '{spec}'\n")
+    assert _m2_files(root) == [rel]
+
+
+def test_test_named_folder_nothing_imports_is_not_browser_code(tmp_copy, vuln_app_path):
+    root = _vite_app(tmp_copy, vuln_app_path)
+    (root / "src/pages/tests").mkdir(parents=True)
+    (root / "src/pages/tests/Quiz.tsx").write_text(BROWSER_LINE)
+    assert _m2_files(root) == []

@@ -60,7 +60,7 @@ def _read(ws: Workspace, rel: str) -> str | None:
 
 def _env_in_scope(rel: str) -> bool:
     """Env files a front-end build can read: not Edge Function secrets, backends or tests."""
-    return not rel.startswith("supabase/") and not is_server_path(rel)
+    return not rel.startswith("supabase/") and not is_server_path(rel) and not is_test_file(rel)
 
 
 def decode_jwt_payload(value: str) -> dict[str, Any] | None:
