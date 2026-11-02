@@ -768,3 +768,16 @@ def test_m3_template_names_open_writes(vuln_findings, graph, ws, access, verb):
     assert validate_trace(t, f, graph, ws)[1] == []
     assert f"can {verb} every row" in t.fix.explanation
     assert any(f" {verb} every row" in s.code for s in t.attack_path)
+
+
+def test_m3_insert_only_template_says_rows_can_be_added_not_read(vuln_findings, graph, ws):
+    base = next(f for f in vuln_findings if f.id == "m3-adoption_requests")
+    ev = {**base.evidence, "access": "insert", "reason": "open_to_everyone"}
+    f = base.model_copy(update={"evidence": ev, "severity": "low", "status": "possible"})
+    t = fallback_trace(f, graph, ws)
+    assert validate_trace(t, f, graph, ws)[1] == []
+    assert "can add rows to adoption_requests, for example spam, but cannot read them" in (
+        t.fix.explanation
+    )
+    assert all("every row" not in s.data for s in t.attack_path)
+    assert any("cannot read them" in s.why for s in t.attack_path)

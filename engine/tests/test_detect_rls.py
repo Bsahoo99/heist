@@ -162,8 +162,8 @@ def test_scoped_policies_do_not_open(tmp_copy, vuln_app_path):
         "create policy x on c for select using (auth.uid() is not null and id = 1);\n"
         "create table private.d (id int);\n",
     )
-    # An insert open to everyone is an open write: critical (fix round 2, item 3).
-    assert f["a"].severity == "critical" and f["a"].evidence["access"] == "write"
+    # An insert open to everyone adds rows but exposes none: low (fix round 3).
+    assert f["a"].severity == "low" and f["a"].evidence["access"] == "insert"
     assert not ({"b", "c", "d", "private.d"} & set(f))
 
 
@@ -211,12 +211,10 @@ _T = "create table {t} (id int, title text);\nalter table {t} enable row level s
     [
         ("for all using (true)", "open_to_everyone", "read_write"),
         ("for all to authenticated using (true)", "open_to_any_user", "read_write"),
-        ("for insert with check (true)", "open_to_everyone", "write"),
         ("for update using (true)", "open_to_everyone", "write"),
         ("for delete to anon using (true)", "open_to_everyone", "write"),
         ("for update to authenticated using (true)", "open_to_any_user", "write"),
         ("for delete using (auth.uid() is not null)", "open_to_any_user", "write"),
-        ("for insert to authenticated with check (true)", "open_to_any_user", "write"),
     ],
 )
 def test_open_writes_are_critical_without_personal_columns(
@@ -229,13 +227,13 @@ def test_open_writes_are_critical_without_personal_columns(
     assert "change" in f["w"].title
 
 
-def test_select_only_read_plus_open_write_is_critical(tmp_copy, vuln_app_path):
+def test_select_only_read_plus_open_update_is_critical(tmp_copy, vuln_app_path):
     f = _sql(
         tmp_copy,
         vuln_app_path,
         _T.format(t="w")
         + "create policy r on w for select using (true);\n"
-        + "create policy i on w for insert with check (true);\n",
+        + "create policy u on w for update using (true);\n",
     )
     assert f["w"].severity == "critical" and f["w"].evidence["access"] == "read_write"
     assert f["w"].title == "Anyone can read and change every row in w"
@@ -271,3 +269,55 @@ def test_restrictive_policy_closes_an_open_write(tmp_copy, vuln_app_path):
         + "create policy r on w as restrictive for insert with check (auth.uid() = user_id);\n",
     )
     assert "w" not in f
+
+
+@pytest.mark.parametrize(
+    "policy, reason",
+    [
+        ("for insert with check (true)", "open_to_everyone"),
+        ("for insert to anon with check (true)", "open_to_everyone"),
+        ("for insert to authenticated with check (true)", "open_to_any_user"),
+        ("for insert with check (auth.uid() is not null)", "open_to_any_user"),
+    ],
+)
+def test_insert_only_opening_is_low_even_with_personal_columns(
+    tmp_copy, vuln_app_path, policy, reason
+):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        "create table contacts (id int, email text, message text);\n"
+        "alter table contacts enable row level security;\n"
+        f"create policy p on contacts {policy};\n",
+    )
+    c = f["contacts"]
+    assert c.evidence["reason"] == reason and c.evidence["access"] == "insert"
+    assert c.severity == "low" and c.status == "possible"
+    assert c.title.endswith("can add rows to contacts (check this is intended)")
+
+
+def test_insert_plus_open_read_is_judged_by_the_read_rules(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        "create table a (id int, email text);\nalter table a enable row level security;\n"
+        "create policy i on a for insert with check (true);\n"
+        "create policy r on a for select using (true);\n"
+        "create table b (id int, title text);\nalter table b enable row level security;\n"
+        "create policy i on b for insert with check (true);\n"
+        "create policy r on b for select using (true);\n",
+    )
+    assert f["a"].severity == "critical" and "access" not in f["a"].evidence
+    assert f["b"].severity == "low" and "access" not in f["b"].evidence
+
+
+def test_open_insert_for_everyone_does_not_hide_an_any_user_read(tmp_copy, vuln_app_path):
+    f = _sql(
+        tmp_copy,
+        vuln_app_path,
+        "create table a (id int, email text);\nalter table a enable row level security;\n"
+        "create policy i on a for insert with check (true);\n"
+        "create policy r on a for select to authenticated using (true);\n",
+    )
+    assert f["a"].evidence["reason"] == "open_to_any_user"
+    assert f["a"].severity == "critical"

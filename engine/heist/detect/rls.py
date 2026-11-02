@@ -27,8 +27,11 @@ SYSTEM_PREFIXES = {
 OWNER_COLUMNS = {"user_id", "owner_id", "sender_id"}
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 READ_COMMANDS = {"select", "all"}
-WRITE_COMMANDS = {"insert", "update", "delete", "all"}
+# Changing existing rows. An INSERT-only opening is judged on its own: it adds rows, never reads.
+WRITE_COMMANDS = {"update", "delete", "all"}
+INSERT_COMMANDS = {"insert"}
 Reason = Literal["open_to_everyone", "open_to_any_user"]
+REASONS: tuple[Reason, ...] = ("open_to_everyone", "open_to_any_user")
 ANY_USER_USING_RE = re.compile(
     r"""^\(?
     (?:
@@ -121,13 +124,17 @@ def _finding(
     *,
     reads: bool = True,
     writes: bool = True,
+    insert_only: bool = False,
 ) -> Finding:
-    """Open writes and reads of personal data are critical. Only a SELECT-only read of a table
-    with no personal columns is low ("check this is intended", plan Review Focus 2)."""
+    """Open updates, deletes and reads of personal data are critical. A SELECT-only read of a
+    table with no personal columns is low ("check this is intended", plan Review Focus 2), and so
+    is an INSERT-only opening: anyone can add rows (spam, say) but cannot read or change any."""
     name = t.name
     who = "Any signed-in user" if reason == "open_to_any_user" else "Anyone"
-    critical = reason == "rls_off" or writes or bool(personal)
-    if reason == "rls_off":
+    critical = not insert_only and (reason == "rls_off" or writes or bool(personal))
+    if insert_only:
+        title = f"{who} can add rows to {name} (check this is intended)"
+    elif reason == "rls_off":
         title = f"Anyone can read every row in {name}"
     elif not reads:
         title = f"{who} can change every row in {name}"
@@ -149,7 +156,9 @@ def _finding(
         refs = [policy.ref]
         nodes = [f"table:{name}", f"policy:{policy.table}:{policy.name}"]
     evidence: dict[str, object] = {"table": name, "reason": reason, "personal_columns": personal}
-    if reason != "rls_off" and writes:
+    if insert_only:
+        evidence["access"] = "insert"
+    elif reason != "rls_off" and writes:
         # Read-only openings carry no "access" key, as before; readers default it to "read".
         evidence["access"] = "read_write" if reads else "write"
     severity: Literal["critical", "low"] = "critical" if critical else "low"
@@ -166,6 +175,26 @@ def _finding(
     )
 
 
+def _table_openings(t: Table, personal: list[str]) -> list[Finding]:
+    """At most one finding per table. Reads and row changes come first (everyone beats any
+    signed-in user); an INSERT-only opening counts only when nothing else is open."""
+    for reason in REASONS:
+        read = _first_open(t, READ_COMMANDS, reason)
+        write = _first_open(t, WRITE_COMMANDS, reason)
+        if read is not None or write is not None:
+            opener = read or write
+            return [
+                _finding(
+                    t, reason, opener, personal, reads=read is not None, writes=write is not None
+                )
+            ]
+    for reason in REASONS:
+        insert = _first_open(t, INSERT_COMMANDS, reason)
+        if insert is not None:
+            return [_finding(t, reason, insert, personal, insert_only=True)]
+    return []
+
+
 def find_rls_issues(ws: Workspace, g: AppGraph) -> list[Finding]:
     if not g.has_db_rules or g.db is None:
         return []
@@ -177,17 +206,5 @@ def find_rls_issues(ws: Workspace, g: AppGraph) -> list[Finding]:
         if not t.rls_enabled:
             out.append(_finding(t, "rls_off", None, personal))
             continue
-        # Everyone beats any signed-in user; reads lead the story when both are open.
-        for reason in ("open_to_everyone", "open_to_any_user"):
-            read = _first_open(t, READ_COMMANDS, reason)
-            write = _first_open(t, WRITE_COMMANDS, reason)
-            if read is None and write is None:
-                continue
-            opener = read or write
-            out.append(
-                _finding(
-                    t, reason, opener, personal, reads=read is not None, writes=write is not None
-                )
-            )
-            break
+        out.extend(_table_openings(t, personal))
     return out

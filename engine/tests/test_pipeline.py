@@ -563,7 +563,7 @@ def test_prove_skips_write_only_openings(tmp_copy, vuln_app_path):
     (root / "supabase/migrations/0004_w.sql").write_text(
         "create table public.guestbook (id int, title text);\n"
         "alter table public.guestbook enable row level security;\n"
-        "create policy g on public.guestbook for insert with check (true);\n"
+        "create policy g on public.guestbook for update using (true);\n"
     )
     seen: list[list[str]] = []
 

@@ -693,7 +693,9 @@ def _m3(ctx: _Ctx) -> TraceOut:
     table = t_node.name
     reason = ctx.ev("reason", "rls_off")
     access = ctx.ev("access", "read")
-    # What the broken lock allows: read, change (insert, update or delete), or both.
+    if access == "insert":
+        return _m3_insert(ctx, t_node, reason)
+    # What the broken lock allows: read, change (update or delete), or both.
     verb = {"write": "change", "read_write": "read and change"}.get(access, "read")
     kind = "read" if access == "read" else "access"
     policy = next((n for i in f.node_ids if (n := ctx.node(i)) and n.kind == "policy"), None)
@@ -861,6 +863,93 @@ def _m3(ctx: _Ctx) -> TraceOut:
                 f"everyone or every signed-in user {verb} all rows with one that only lets users "
                 f"{verb} their own rows"
                 f"{f' (where {owner} = auth.uid())' if owner else ''}. Add it as a new migration."
+            ),
+        ),
+    )
+
+
+def _m3_insert(ctx: _Ctx, t_node: Node, reason: str) -> TraceOut:
+    """An INSERT-only opening: anyone can add rows (spam, say) but cannot read or change any."""
+    f = ctx.f
+    table = t_node.name
+    who = "any signed-in user" if reason == "open_to_any_user" else "anyone"
+    policy = next((n for i in f.node_ids if (n := ctx.node(i)) and n.kind == "policy"), None)
+    ref = f.refs[0] if f.refs else t_node.ref
+    page = _front(ctx, [t_node.id])
+    schema = ctx.g.db.tables[table].schema if ctx.g.db and table in ctx.g.db.tables else "public"
+    why = f"With this rule {who} can add rows to {table}, for example spam, but cannot read them."
+
+    ghost = [_visitor(ctx, "A customer walks up to the shop.")]
+    if page:
+        ghost.append(
+            _at(
+                page,
+                f"a new row for {table}",
+                "In the shop window, they fill in a form and drop it in the box.",
+                "Public forms often let anyone add a row. Reading the rows is what must stay closed.",
+                f"{page.name} inserts into {table} with the public anon key.",
+            )
+        )
+    ghost.append(
+        _at(
+            t_node,
+            f"one new row in {table}",
+            f"Their note lands in the {table} box. Nobody can take it back out.",
+            why,
+            f"Rows go into {table}; no read rule lets them back out.",
+        )
+    )
+
+    attack = [_visitor(ctx, "Someone with bad intentions walks up to the same shop.")]
+    if policy and ref:
+        attack.append(
+            _at_ref(
+                policy,
+                ref,
+                f"a slot that takes rows from {who}",
+                f"The box has a letter slot open to {who}. They can stuff it with junk, but they "
+                "cannot reach inside.",
+                why,
+                f"Policy {policy.name} on {table} lets {who} insert rows. It does not let anyone "
+                "read, change or delete them.",
+            )
+        )
+    attack.append(
+        _at(
+            t_node,
+            f"junk rows in {table}",
+            f"They pour fake rows into {table}. Annoying, but no one's data leaves the vault.",
+            why,
+            f"Inserts into {table} succeed; selects, updates and deletes are still blocked.",
+        )
+    )
+
+    path = _next_migration(ctx, f"heist_insert_{_slug(table)}")
+    sql = [
+        f"-- {table} takes rows from {who}. If that is intended (a contact form, a waitlist,",
+        "-- a log), keep it and add rate limiting or a captcha in front of it.",
+        "-- If not, replace the open insert rule with one tied to the signed-in user, for example:",
+    ]
+    if policy:
+        sql.append(f'-- drop policy "{policy.name}" on {schema}.{table};')
+    sql += [
+        f'-- create policy "{_slug(table)}_insert_own" on {schema}.{table}',
+        "--   for insert to authenticated with check ((select auth.uid()) = user_id);",
+    ]
+    return TraceOut(
+        ghost_path=ghost,
+        attack_path=attack,
+        fix=FixOut(
+            explanation=(
+                f"{why} That is fine for a public form such as a contact form, a waitlist or a "
+                "log, as long as you add rate limiting or a captcha so it cannot be flooded. If "
+                f"only signed-in users should add rows, tie the insert rule to the user."
+            ),
+            diff=_new_file_diff(path, sql),
+            prompt=(
+                f"{ctx.tool}, the {table} table lets {who} add rows. If it is a public form, "
+                "please add rate limiting or a captcha to it. If it is not, please change the "
+                "insert policy so only signed-in users can add their own rows, as a new migration."
             ),
         ),
     )
