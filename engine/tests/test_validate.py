@@ -800,4 +800,4 @@ def test_m3_template_names_both_audiences_when_they_differ(vuln_findings, graph,
     )
     policy_steps = [s for s in t.attack_path if s.code.startswith("Policy ")]
     assert policy_steps and policy_steps[0].code.endswith("lets every visitor change every row.")
-    assert "—" not in t.model_dump_json()
+    assert "\u2014" not in t.model_dump_json()
