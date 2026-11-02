@@ -161,6 +161,53 @@ function drawnRect(kind: string, p: { x: number; y: number }): Rect {
 }
 
 /**
+ * The map rects a steady wide frame must hold for `finding` (or, with none,
+ * for a clean app's doors). `rings`: hold each item's highlight ring and glow
+ * too, not only its box.
+ */
+function heistRects(scene: Scene, finding: SceneFinding | null, extra: Rect[], rings: boolean): Rect[] {
+  const placed = placeItems(scene);
+  const labels = layoutLabels(placed);
+  const titles = zoneTitles();
+  const rects: Rect[] = [...extra];
+  let zones: Set<ZoneId>;
+  let ids: Set<string>;
+  if (finding) {
+    const steps = [...finding.ghost_path, ...finding.attack_path];
+    ids = new Set(steps.map((s) => s.item_id));
+    zones = new Set<ZoneId>([...steps.map((s) => s.zone), "street"]);
+    for (const r of [routePath(finding.ghost_path, scene), routePath(finding.attack_path, scene)]) {
+      rects.push(...r.points.map((p) => ({ x: p.x, y: p.y, w: 0, h: 0 })));
+    }
+    rects.push(...zoneRects("street"));
+    // The last stop's whole zone: the vault for an open table, where the proof lands.
+    const last = finding.attack_path.at(-1);
+    if (last) rects.push(...zoneRects(last.zone));
+    for (const p of placed) if (p.item.kind === "visitor") ids.add(p.item.node_id);
+  } else {
+    zones = new Set(LOCK_ZONES.filter((id) => scene.zones.find((z) => z.id === id)?.active));
+    ids = new Set(placed.filter((p) => zones.has(p.zone)).map((p) => p.item.node_id));
+    for (const z of zones) rects.push(...zoneRects(z));
+  }
+  for (const p of placed) {
+    if (ids.has(p.item.node_id)) rects.push(rings ? drawnRect(p.item.kind, p) : boxRect(p.item.kind, p));
+  }
+  rects.push(...labels.filter((l) => ids.has(l.nodeId)).map((l) => l.rect));
+  rects.push(...titles.filter((t) => zones.has(t.zone)).map((t) => t.rect));
+  return rects;
+}
+
+/** Every drawn item box, for checking what a frame cuts. */
+function drawnBoxes(scene: Scene) {
+  return placeItems(scene)
+    .filter((p) => !p.overflow)
+    .map((p) => ({ id: p.item.node_id, rect: drawnRect(p.item.kind, p) }));
+}
+
+/** Never zoom in past WIDE_MIN_WIDTH map px, nor past WIDE_MAX_SCALE on a big box. */
+const wideMinWidth = (size: { width: number }) => Math.max(WIDE_MIN_WIDTH, size.width / WIDE_MAX_SCALE);
+
+/**
  * The wide-screen frame: one steady frame for the whole replay (no per-step
  * camera, so a recording does not sway), shaped like the map box `size`.
  *
@@ -181,39 +228,11 @@ export function wideFrame(
   opts: { extra?: Rect[] } = {},
 ): WideFrame {
   const aspect = size.width / size.height;
-  const placed = placeItems(scene);
-  const labels = layoutLabels(placed);
-  const titles = zoneTitles();
-  const rects: Rect[] = [...(opts.extra ?? [])];
-  let zones: Set<ZoneId>;
-  let ids: Set<string>;
-  if (finding) {
-    const steps = [...finding.ghost_path, ...finding.attack_path];
-    ids = new Set(steps.map((s) => s.item_id));
-    zones = new Set<ZoneId>([...steps.map((s) => s.zone), "street"]);
-    for (const r of [routePath(finding.ghost_path, scene), routePath(finding.attack_path, scene)]) {
-      rects.push(...r.points.map((p) => ({ x: p.x, y: p.y, w: 0, h: 0 })));
-    }
-    rects.push(...zoneRects("street"));
-    // The last stop's whole zone: the vault for an open table, where the proof lands.
-    const last = finding.attack_path.at(-1);
-    if (last) rects.push(...zoneRects(last.zone));
-    for (const p of placed) if (p.item.kind === "visitor") ids.add(p.item.node_id);
-  } else {
-    zones = new Set(LOCK_ZONES.filter((id) => scene.zones.find((z) => z.id === id)?.active));
-    ids = new Set(placed.filter((p) => zones.has(p.zone)).map((p) => p.item.node_id));
-    for (const z of zones) rects.push(...zoneRects(z));
-  }
-  for (const p of placed) if (ids.has(p.item.node_id)) rects.push(boxRect(p.item.kind, p));
-  rects.push(...labels.filter((l) => ids.has(l.nodeId)).map((l) => l.rect));
-  rects.push(...titles.filter((t) => zones.has(t.zone)).map((t) => t.rect));
-
-  // Never zoom in past WIDE_MIN_WIDTH map px, nor past WIDE_MAX_SCALE on a big box.
-  const minWidth = Math.max(WIDE_MIN_WIDTH, size.width / WIDE_MAX_SCALE);
-  let vb = fit(bbox(rects, VIEW_PAD), aspect, minWidth);
+  const minWidth = wideMinWidth(size);
+  let vb = fit(bbox(heistRects(scene, finding, opts.extra ?? [], false), VIEW_PAD), aspect, minWidth);
   const limit = vb.width * WIDE_GROW_LIMIT;
   const hidden = new Set<string>();
-  const boxes = placed.filter((p) => !p.overflow).map((p) => ({ id: p.item.node_id, rect: drawnRect(p.item.kind, p) }));
+  const boxes = drawnBoxes(scene);
   // Taking one box in can bring another to the edge: repeat until nothing is cut.
   for (let pass = 0; pass < boxes.length; pass++) {
     const cut = boxes.find((b) => !hidden.has(b.id) && crossesEdge(vb, b.rect));
@@ -227,13 +246,32 @@ export function wideFrame(
   return { ...vb, hidden: still.sort() };
 }
 
+/** The recording's margin (map px) around the heist, so no actor, route or label touches the frame edge. */
+export const RECORD_PAD = 40;
+
 /**
- * The recording's frame: the whole city (every zone, slot and label, as the
- * full map draws it), centred and fitted to the map box `size`, so no plate is
- * cut and nothing leans to one side.
+ * The recording's frame, shaped like the map box `size`.
+ *
+ * For a finding it holds what wideFrame holds (the routes, their items and
+ * labels, the zone titles, the street with the visitor and the last stop's
+ * zone), centred on them both ways with a RECORD_PAD margin. Unlike wideFrame
+ * it never grows toward a box at the edge, since that would push the action
+ * off centre: plates beyond the heist may be cut, and any box the frame cuts
+ * is listed in `hidden` (left out of the drawing). With no finding (a clean
+ * app, whose replay walks every door) it holds the whole city, centred.
  */
-export function cityFrame(size: { width: number; height: number }): WideFrame {
-  return { ...fit(VIEWBOX, size.width / size.height, 0), hidden: [] };
+export function recordFrame(
+  scene: Scene,
+  finding: SceneFinding | null,
+  size: { width: number; height: number },
+): WideFrame {
+  const aspect = size.width / size.height;
+  if (!finding) return { ...fit(VIEWBOX, aspect, 0), hidden: [] };
+  const vb = fit(bbox(heistRects(scene, finding, [], true), RECORD_PAD), aspect, wideMinWidth(size));
+  const hidden = drawnBoxes(scene)
+    .filter((b) => crossesEdge(vb, b.rect))
+    .map((b) => b.id);
+  return { ...vb, hidden: hidden.sort() };
 }
 
 export type Corner = "bottom-left" | "top-right" | "top-left" | "bottom-right";

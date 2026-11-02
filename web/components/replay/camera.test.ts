@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { CAMERA_MIN_WIDTH, cameraFrame, cityFrame } from "./camera";
+import { CAMERA_MIN_WIDTH, RECORD_PAD, cameraFrame, recordFrame, wideFrame } from "./camera";
 import { legPoints, stepStopIndices, stopFraction } from "./geometry";
 import {
   VIEWBOX,
@@ -12,6 +12,7 @@ import {
   placeItems,
   routePath,
 } from "@/components/map/layout";
+import * as layoutModule from "@/components/map/layout";
 import { PATH_OFFSET } from "@/components/map/Paths";
 import { replaySteps } from "@/lib/timeline";
 import type { PathStep } from "@/lib/scene.gen";
@@ -305,13 +306,99 @@ describe("wideFrame on a big box", () => {
   });
 });
 
-describe("cityFrame", () => {
-  test("holds the whole city, centred, shaped like the box", () => {
-    for (const size of [
-      { width: 1248, height: 594 },
-      { width: 600, height: 600 },
-    ]) {
-      const vb = cityFrame(size);
+describe("recordFrame", () => {
+  /** The recording's map box at 1280x720, and a squarer one. */
+  const SIZES = [
+    { width: 1246, height: 594 },
+    { width: 800, height: 600 },
+  ];
+  const { layoutLabels, zoneRects, zoneTitles } = layoutModule;
+  const labels = layoutLabels(placed);
+
+  /** What the story needs on screen: the routes, their items with labels, the visitor, the street and the last stop's zone. */
+  function heist(f: (typeof vulnScene.findings)[number]) {
+    const steps = [...f.ghost_path, ...f.attack_path];
+    const ids = new Set(steps.map((s) => s.item_id));
+    for (const p of placed) if (p.item.kind === "visitor") ids.add(p.item.node_id);
+    const points = [routePath(f.ghost_path, vulnScene), routePath(f.attack_path, vulnScene)].flatMap((r) =>
+      r.points.map((p) => ({ x: p.x, y: p.y, w: 0, h: 0 })),
+    );
+    const items = placed.filter((p) => ids.has(p.item.node_id)).map((p) => boxRect(p.item.kind, p));
+    const itemLabels = labels.filter((l) => ids.has(l.nodeId)).map((l) => l.rect);
+    // Items are held with their highlight ring (28 x 14 px around the ground point, plus 4 px of glow).
+    const rings = placed
+      .filter((p) => ids.has(p.item.node_id))
+      .map((p) => ({ x: p.x - 32, y: p.y - 18, w: 64, h: 36 }));
+    const visited = new Set([...steps.map((s) => s.zone), "street"]);
+    const titles = zoneTitles()
+      .filter((t) => visited.has(t.zone))
+      .map((t) => t.rect);
+    const last = f.attack_path.at(-1)!.zone;
+    return {
+      ids,
+      actors: [...points, ...items, ...itemLabels],
+      held: [...points, ...items, ...rings, ...itemLabels, ...titles, ...zoneRects("street"), ...zoneRects(last)],
+    };
+  }
+
+  const span = (rects: { x: number; y: number; w: number; h: number }[]) => ({
+    x0: Math.min(...rects.map((r) => r.x)),
+    y0: Math.min(...rects.map((r) => r.y)),
+    x1: Math.max(...rects.map((r) => r.x + r.w)),
+    y1: Math.max(...rects.map((r) => r.y + r.h)),
+  });
+
+  test("a finding: every actor, route and label sits at least RECORD_PAD inside the edge", () => {
+    for (const size of SIZES) {
+      for (const f of vulnScene.findings) {
+        const vb = recordFrame(vulnScene, f, size);
+        const { actors } = heist(f);
+        const s = span(actors);
+        expect(s.x0 - vb.x).toBeGreaterThanOrEqual(RECORD_PAD - 0.01);
+        expect(s.y0 - vb.y).toBeGreaterThanOrEqual(RECORD_PAD - 0.01);
+        expect(vb.x + vb.width - s.x1).toBeGreaterThanOrEqual(RECORD_PAD - 0.01);
+        expect(vb.y + vb.height - s.y1).toBeGreaterThanOrEqual(RECORD_PAD - 0.01);
+        expect(vb.width / vb.height).toBeCloseTo(size.width / size.height, 2);
+      }
+    }
+  });
+
+  test("a finding: the heist is centred both ways, not pulled toward an edge plate", () => {
+    for (const size of SIZES) {
+      for (const f of vulnScene.findings) {
+        const vb = recordFrame(vulnScene, f, size);
+        const s = span(heist(f).held);
+        expect(Math.abs(vb.x + vb.width / 2 - (s.x0 + s.x1) / 2)).toBeLessThan(1);
+        expect(Math.abs(vb.y + vb.height / 2 - (s.y0 + s.y1) / 2)).toBeLessThan(1);
+      }
+    }
+  });
+
+  test("a finding: frames as tightly as wideFrame allows, never wider than it grows", () => {
+    const f = finding("m1-vite-openai-api-key");
+    const size = SIZES[0];
+    const rec = recordFrame(vulnScene, f, size);
+    const wide = wideFrame(vulnScene, f, size);
+    expect(rec.width).toBeLessThanOrEqual(wide.width + 0.01);
+    expect(rec.width).toBeLessThan(VIEWBOX.width * 0.75);
+  });
+
+  test("a finding: nothing is drawn half in, and the heist's own items are never hidden", () => {
+    for (const f of vulnScene.findings) {
+      const vb = recordFrame(vulnScene, f, SIZES[0]);
+      const { ids } = heist(f);
+      for (const id of vb.hidden) expect(ids.has(id)).toBe(false);
+      for (const p of placed.filter((p) => !p.overflow && !vb.hidden.includes(p.item.node_id))) {
+        const b = boxRect(p.item.kind, p);
+        const overlaps = b.x < vb.x + vb.width && vb.x < b.x + b.w && b.y < vb.y + vb.height && vb.y < b.y + b.h;
+        if (overlaps) expect(insideView(vb, b)).toBe(true);
+      }
+    }
+  });
+
+  test("a clean app: the whole city, centred, shaped like the box", () => {
+    for (const size of SIZES) {
+      const vb = recordFrame(cleanScene, null, size);
       expect(vb.hidden).toEqual([]);
       expect(vb.width / vb.height).toBeCloseTo(size.width / size.height, 2);
       expect(vb.x).toBeLessThanOrEqual(VIEWBOX.x);
@@ -321,5 +408,10 @@ describe("cityFrame", () => {
       expect(vb.x + vb.width / 2).toBeCloseTo(VIEWBOX.x + VIEWBOX.width / 2, 0);
       expect(vb.y + vb.height / 2).toBeCloseTo(VIEWBOX.y + VIEWBOX.height / 2, 0);
     }
+  });
+
+  test("deterministic", () => {
+    const f = finding("m3-messages");
+    expect(recordFrame(vulnScene, f, SIZES[0])).toEqual(recordFrame(vulnScene, f, SIZES[0]));
   });
 });
