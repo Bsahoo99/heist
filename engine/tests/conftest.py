@@ -1,3 +1,4 @@
+import functools
 import shutil
 import subprocess
 from collections.abc import Callable, Iterator
@@ -39,6 +40,7 @@ def tmp_copy(tmp_path: Path) -> Callable[[Path], Path]:
     return _copy
 
 
+@functools.cache
 def _docker_up() -> bool:
     if shutil.which("docker") is None:
         return False
@@ -47,6 +49,12 @@ def _docker_up() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return res.returncode == 0
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Skip every `docker` test when Docker is not running, not only those using `pg_container`."""
+    if item.get_closest_marker("docker") and not _docker_up():
+        pytest.skip("Docker is not running")
 
 
 @pytest.fixture(scope="session")
