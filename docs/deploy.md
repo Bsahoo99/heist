@@ -64,8 +64,9 @@ HEIST_WEB_ORIGINS=https://heist.vercel.app uv run modal deploy heist/modal_app.p
 Modal prints the endpoint, `https://<workspace>--heist-engine-web.modal.run`; keep it for the web app.
 The engine runs in exactly one container on purpose: live progress, joins and the rate limit live in its memory.
 That container is kept warm (`min_containers=1`) so Modal never scales it away while an analysis runs in the background.
+It is also non-preemptible (`NONPREEMPTIBLE = True`), because a preemption would kill the analysis threads; Modal bills its CPU and memory at 3x for that.
 A deploy replaces the container and drops any analysis in flight, so only deploy when no analysis is running (check the Modal dashboard for active inputs and recent `[heist] analysis` log lines).
-After judging, set `MIN_CONTAINERS` in `engine/heist/modal_app.py` back to 0 and deploy once more, so the idle container stops costing money.
+After judging, set `MIN_CONTAINERS` back to 0 and `NONPREEMPTIBLE` back to `False` in `engine/heist/modal_app.py` and deploy once more, so the idle container stops costing money.
 
 ## 7. Deploy the web app to Vercel
 

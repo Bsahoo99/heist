@@ -48,6 +48,10 @@ UV_VERSION = "0.12.5"  # the same uv the local prover image uses
 # Set MIN_CONTAINERS back to 0 after judging to stop paying for the idle container.
 MIN_CONTAINERS = 1
 MAX_CONTAINERS = 1
+# Modal may preempt any container; it restarts the input, but the analysis threads die with it.
+# Non-preemptible placement costs 3x for CPU and memory; set it back to False with
+# MIN_CONTAINERS after judging.
+NONPREEMPTIBLE = True
 # Every viewer of a running analysis holds one input (its SSE stream) for the whole run; the
 # work is async I/O plus two analysis threads, so many inputs at once are cheap and keep
 # POSTs and page loads from queueing behind open streams.
@@ -93,6 +97,7 @@ app = modal.App(APP_NAME)
     env=CONTAINER_ENV,
     min_containers=MIN_CONTAINERS,
     max_containers=MAX_CONTAINERS,
+    nonpreemptible=NONPREEMPTIBLE,
     scaledown_window=SCALEDOWN_WINDOW_S,
     timeout=REQUEST_TIMEOUT_S,
 )

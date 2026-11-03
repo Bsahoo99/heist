@@ -35,6 +35,8 @@ def test_modal_app_imports_without_credentials(monkeypatch: pytest.MonkeyPatch, 
     # One container, always up: the live registry, joins and the rate limiter live in its
     # memory, and its analysis threads must not be scaled away.
     assert modal_app.MIN_CONTAINERS == modal_app.MAX_CONTAINERS == 1
+    # A preemption would kill the analysis threads too.
+    assert modal_app.NONPREEMPTIBLE is True
     assert modal_app.MAX_CONCURRENT_INPUTS >= 500
     assert isinstance(modal_app.web, modal.Function)
 
