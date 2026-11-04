@@ -6,9 +6,8 @@ export type Example = {
 };
 
 export const EXAMPLES: Example[] = [
-  // Task 21 fills in these two URLs once the demo and clean apps are public repos.
-  { label: "Demo app" },
-  { label: "Clean app" },
+  { label: "Demo app", url: "https://github.com/Bsahoo99/pawhaven" },
+  { label: "Clean app", url: "https://github.com/Bsahoo99/pawhaven-fixed" },
 ];
 
 export const shownExamples = (examples: Example[] = EXAMPLES) =>
