@@ -8,7 +8,8 @@ So the video and the examples must not say Lovable built it.
 
 ## Repo URL
 
-- Vulnerable: https://github.com/Bsahoo99/pawhaven (commit 2849802), analysis `Yfn1aENDRkh-`.
+- Vulnerable: https://github.com/Bsahoo99/pawhaven (commit ada5674), analysis `zUgZGi3hZnDK`.
+  The first analysis, `Yfn1aENDRkh-` at commit 2849802, predates the fix-advice check and told staff to keep the browser admin client.
 - Fixed: https://github.com/Bsahoo99/pawhaven-fixed (commit 7deb704), analysis `QQiLB8ZxBT5_`.
 
 Heist only analyses a repo's latest commit, so the two versions live in two repos and the landing page offers both as example chips.
