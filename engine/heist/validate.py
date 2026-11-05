@@ -14,6 +14,20 @@ ATTACK_STEPS = (3, 7)
 REDACTED = "<redacted>"
 DIFF_SWAPPED = "fix diff does not match the repo, so the template diff is used instead"
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+ADMIN_ADVICE = (
+    "the fix tells the owner to rely on the service role (admin) key; never recommend it for "
+    "front-end code, give staff access through a row level security policy or an edge function "
+    "that checks the caller, so the template fix text is used instead"
+)
+# Fix advice that leans on the admin key: a sentence that tells the owner to use, keep or rely
+# on it, with no negation before it and no server-side place named. Text that removes the key,
+# moves it to a server, or only describes a function that has it is fine.
+_ADMIN_KEY_RE = re.compile(r"service[\s_-]?role|admin (?:client|key)", re.IGNORECASE)
+_RELY_RE = re.compile(r"\b(?:use|keep|reuse|rely on|switch|go through|via)\b", re.IGNORECASE)
+_AWAY_RE = re.compile(
+    r"\b(?:never|not|no|remove\w*|delete|drop|stop|instead|without)\b|n't", re.IGNORECASE
+)
+_SERVER_RE = re.compile(r"\b(?:server\w*|edge functions?|only)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -262,6 +276,16 @@ def _clean_path(
     return kept
 
 
+def _leans_on_admin_key(text: str) -> bool:
+    for sentence in re.split(r"[.!?\n]+", text):
+        key = _ADMIN_KEY_RE.search(sentence)
+        if key is None or not _RELY_RE.search(sentence) or _SERVER_RE.search(sentence):
+            continue
+        if not _AWAY_RE.search(sentence[: key.start()]):
+            return True
+    return False
+
+
 def check_trace(t: TraceOut, f: Finding, g: AppGraph, ws: Workspace) -> Report:
     t = scrub_dashes(t)
     nodes = {n.id: n for n in g.nodes}
@@ -297,8 +321,15 @@ def check_trace(t: TraceOut, f: Finding, g: AppGraph, ws: Workspace) -> Report:
         errors.append("fix needs a plain explanation and a fix prompt")
         fatal = True
 
-    needs_retry = bool(errors)
     fix = t.fix
+    if _leans_on_admin_key(fix.explanation) or _leans_on_admin_key(fix.prompt):
+        template = fallback_trace(f, g, ws).fix
+        fix = fix.model_copy(
+            update={"explanation": template.explanation, "prompt": template.prompt}
+        )
+        errors.append(ADMIN_ADVICE)
+
+    needs_retry = bool(errors)
     diff_problems = _check_diff(fix.diff, lines)
     if diff_problems:
         template = fallback_trace(f, g, ws).fix.diff

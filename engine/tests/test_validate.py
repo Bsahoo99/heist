@@ -20,7 +20,7 @@ from heist.llm.trace import (
     trace_with_validation,
 )
 from heist.models import AppGraph, CodeRef, Finding, FixOut, StepOut, TraceOut
-from heist.validate import _hunk_at, check_diff, validate_trace
+from heist.validate import _hunk_at, check_diff, check_trace, validate_trace
 from tests.helpers import all_findings
 
 T = TypeVar("T", bound=BaseModel)
@@ -801,3 +801,54 @@ def test_m3_template_names_both_audiences_when_they_differ(vuln_findings, graph,
     policy_steps = [s for s in t.attack_path if s.code.startswith("Policy ")]
     assert policy_steps and policy_steps[0].code.endswith("lets every visitor change every row.")
     assert "\u2014" not in t.model_dump_json()
+
+
+# --- fix advice must never lean on the admin key --------------------------------------
+
+ADMIN_ADVICE = [
+    "Staff should use the service_role admin client already used in Admin.tsx, not an open policy.",
+    "Keep the service role key in the dashboard so staff can still see every request.",
+    "Let the shelter page rely on the admin client for staff access.",
+    "Switch the dashboard to the SUPABASE_SERVICE_ROLE_KEY client.",
+]
+SAFE_ADVICE = [
+    "Remove the service role key from the browser and move admin work to an edge function.",
+    "Never use the service role key in front-end code.",
+    "The function uses the service role client, which skips every lock, so filter by user_id.",
+    "Use the service role key only inside an edge function that checks the caller first.",
+    "Give staff access through a policy that checks profiles.is_staff instead of the admin client.",
+]
+
+
+@pytest.mark.parametrize("where", ["explanation", "prompt"])
+@pytest.mark.parametrize("advice", ADMIN_ADVICE)
+def test_fix_advice_that_leans_on_the_admin_key_is_replaced(f_messages, graph, ws, where, advice):
+    t = good_trace(f_messages)
+    t.fix = t.fix.model_copy(update={where: advice})
+    r = check_trace(t, f_messages, graph, ws)
+    assert r.needs_retry and not r.fatal
+    assert any("service role" in e for e in r.errors)
+    template = fallback_trace(f_messages, graph, ws).fix
+    assert r.trace.fix.explanation == template.explanation
+    assert r.trace.fix.prompt == template.prompt
+
+
+@pytest.mark.parametrize("advice", SAFE_ADVICE)
+def test_fix_advice_that_moves_the_admin_key_away_is_kept(f_messages, graph, ws, advice):
+    t = good_trace(f_messages)
+    t.fix = t.fix.model_copy(update={"explanation": advice})
+    r = check_trace(t, f_messages, graph, ws)
+    assert r.errors == [] and r.trace.fix.explanation == advice
+
+
+def test_retry_fixes_admin_key_advice(f_messages, graph, ws, fake_client):
+    bad = good_trace(f_messages)
+    bad.fix = bad.fix.model_copy(update={"explanation": ADMIN_ADVICE[0]})
+    fake_client.queue(bad, good_trace(f_messages))
+    t, how = trace_with_validation(f_messages, graph, ws, fake_client, findings=[f_messages])
+    assert how == "model_retry" and t.fix.explanation == "Turn on row level security."
+    assert fake_client.last_feedback is not None and "service role" in fake_client.last_feedback
+
+
+def test_system_prompt_forbids_admin_key_advice():
+    assert "service role" in system_prompt()
